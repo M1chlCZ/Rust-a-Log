@@ -1,4 +1,4 @@
-# Rust Rust-a-Log
+# Rust-a-Log
 
 ![use case](misc/pic.png)
 
