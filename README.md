@@ -1,5 +1,7 @@
 # Rust Rust-a-Log
 
+![use case](misc/pic.png)
+
 Rust a Log is a simple and efficient log viewer, made with the Rust programming language. It has a user-friendly interface, with real-time updating and color-coded log levels, making it easy to quickly identify and analyze your logs.
 
 ## Features
