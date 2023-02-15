@@ -1,0 +1,12 @@
+[package]
+name = "rust-a-log"
+version = "0.0.1"
+edition = "2021"
+authors = ["M1chl <m1chlcz18@gmail.com>"]
+
+[[bin]]
+name = "rual"
+path = "src/main.rs"
+
+[dependencies]
+colored = "2.0.0"
