@@ -8,28 +8,44 @@ use std::time::Duration;
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = env::args().collect();
-
-    if args.len() != 2 {
+    let mut num_lines: usize = 10;
+    if args.len() < 2 {
         println!("Usage: {} <log_file>", args[0]);
-        Err(io::Error::new(ErrorKind::Other, "Invalid arguments"))?;
+        //empty error return
+        Err(io::Error::new(
+            ErrorKind::NotFound,
+            "Err: 01 | No file specified",
+        ))?;
     }
-
+    
     let path = Path::new(&args[1]).to_str().unwrap().to_string();
     let file = match File::open(path) {
         Ok(file) => file,
-        Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "Err: 69 | No such file - wrong file path"))
+        Err(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Err: 69 | No such file - wrong file path",
+            ))
+        }
     };
-    dry_run(&file)?;
+
+    if args.len() == 3 {
+        num_lines = match args.get(2) {
+            Some(arg) => arg.parse::<usize>().unwrap_or(10),
+            None => 10,
+        };
+    }
+    dry_run(&file, num_lines)?;
     loop_run(&file)?;
     Ok(())
 }
 
-fn dry_run(path: &File) -> io::Result<()> {
+fn dry_run(path: &File, lines_sub: usize) -> io::Result<()> {
     let reader = BufReader::new(path);
     let lines: Vec<String> = reader.lines().map(|l| l.unwrap()).collect();
     let end: usize = lines.len();
-    let start = if lines.len() > 10 {
-        end - 10
+    let start = if lines.len() > lines_sub {
+        end - lines_sub
     } else {
         end - lines.len()
     };
@@ -90,8 +106,8 @@ fn loop_run(file: &File) -> io::Result<()> {
             };
             let log_level_end = buffer.find("]").unwrap();
             let log_level = &buffer[log_level_start..log_level_end + 1];
-            let first_part = &buffer[0..log_level_start];
-            let message = &buffer[log_level_end + 1..];
+            let date = &buffer[0..log_level_start].white();
+            let message = &buffer[log_level_end + 1..].white().bold();
 
             let colored_level = match log_level {
                 "[ERROR]" => log_level.red().bold(),
@@ -100,7 +116,7 @@ fn loop_run(file: &File) -> io::Result<()> {
                 _ => log_level.normal(),
             };
 
-            let colored_line = format!("{}{}{}", first_part, colored_level, message);
+            let colored_line = format!("{}{}{}", date, colored_level, message);
             println!("{}", colored_line);
         }
     }
