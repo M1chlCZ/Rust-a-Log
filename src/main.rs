@@ -18,12 +18,12 @@ fn main() -> io::Result<()> {
         ))?;
     }
     
-    let path = Path::new(&args[1]).to_str().unwrap().to_string();
+    let path = Path::new(&args[1]).to_str().unwrap();
     let file = match File::open(path) {
         Ok(file) => file,
         Err(_) => {
             return Err(io::Error::new(
-                io::ErrorKind::Other,
+                ErrorKind::Other,
                 "Err: 69 | No such file - wrong file path",
             ))
         }
@@ -51,28 +51,8 @@ fn dry_run(path: &File, lines_sub: usize) -> io::Result<()> {
     };
 
     for line in lines[start..end].iter() {
-        let buffer = line.as_str();
-        let log_level_start = match buffer.find("[") {
-            Some(pos) => pos,
-            None => {
-                println!("{}", buffer.white());
-                continue;
-            }
-        };
-        let log_level_end = buffer.find("]").unwrap();
-        let log_level = &buffer[log_level_start..log_level_end + 1];
-        let date = &buffer[0..log_level_start].white();
-        let message = &buffer[log_level_end + 1..].white().bold();
-
-        let colored_level = match log_level {
-            "[ERROR]" => log_level.red().bold(),
-            "[WARNING]" => log_level.yellow().bold(),
-            "[INFO]" => log_level.green().bold(),
-            _ => log_level.normal(),
-        };
-
-        let colored_line = format!("{}{}{}", date, colored_level, message);
-        println!("{}", colored_line);
+        let str = line_parse(&line.to_string());
+        println!("{}", str);
     }
     Ok(())
 }
@@ -96,28 +76,30 @@ fn loop_run(file: &File) -> io::Result<()> {
         reader.seek(SeekFrom::Start(original_file_size)).unwrap();
 
         for line in reader.lines() {
-            let buffer = line.unwrap();
-            let log_level_start = match buffer.find("[") {
-                Some(pos) => pos,
-                None => {
-                    println!("{}", buffer.white());
-                    continue;
-                }
-            };
-            let log_level_end = buffer.find("]").unwrap();
-            let log_level = &buffer[log_level_start..log_level_end + 1];
-            let date = &buffer[0..log_level_start].white();
-            let message = &buffer[log_level_end + 1..].white().bold();
-
-            let colored_level = match log_level {
-                "[ERROR]" => log_level.red().bold(),
-                "[WARNING]" => log_level.yellow().bold(),
-                "[INFO]" => log_level.green().bold(),
-                _ => log_level.normal(),
-            };
-
-            let colored_line = format!("{}{}{}", date, colored_level, message);
-            println!("{}", colored_line);
+           let str = line_parse(&line.unwrap());
+            println!("{}", str);
         }
     }
+}
+
+fn line_parse(line: &String) -> String{
+    let log_level_start = match line.find("[") {
+        Some(pos) => pos,
+        None => {
+            return line.white().to_string();
+        }
+    };
+    let log_level_end = line.find("]").unwrap();
+    let log_level = &line[log_level_start..log_level_end + 1];
+    let date = &line[0..log_level_start].white();
+    let message = &line[log_level_end + 1..].white().bold();
+
+    let colored_level = match log_level {
+        "[ERROR]" => log_level.red().bold(),
+        "[WARNING]" => log_level.yellow().bold(),
+        "[INFO]" => log_level.green().bold(),
+        _ => log_level.normal(),
+    };
+
+    format!("{}{}{}", date, colored_level, message)
 }
