@@ -27,10 +27,10 @@ If these labels won't be present it will be like `tail -f` (just build for the f
 Simply run the binary with the path to the log file as an argument:
 
 ```
-./rual path/to/log.txt
+./rual path/to/log.txt <optionalNumOfLines>
 ```
 
-The app will start by reading the last 10 lines of the log file, or all of the lines if the log file has less than 10 lines. The app will then continue to monitor the log file for new lines, updating the log output in real-time.
+The app will start by reading the last 10 lines (if not specified otherwise) of the log file, or all of the lines if the log file has less than 10 lines. The app will then continue to monitor the log file for new lines, updating the log output in real-time.
 
 ## Contributing
 
