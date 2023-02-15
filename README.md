@@ -15,7 +15,7 @@ Rust a Log is a simple and efficient log viewer, made with the Rust programming 
 To use Rust a Log, you first need to have somewhere in your log labels like this: 
 
 ```
-[WARN]
+[WARNING]
 [ERROR]
 [INFO]
 ```
