@@ -59,7 +59,6 @@ fn dry_run(path: &File, lines_sub: usize) -> io::Result<()> {
 
 fn loop_run(file: &File) -> io::Result<()> {
     let mut reader = BufReader::new(file);
-
     loop {
         reader.seek(SeekFrom::End(0)).unwrap();
         let original_file_size = reader.seek(SeekFrom::Current(0)).unwrap();
@@ -89,7 +88,13 @@ fn line_parse(line: &String) -> String{
             return line.white().to_string();
         }
     };
-    let log_level_end = line.find("]").unwrap();
+
+    let log_level_end = match line.find("]") {
+        Some(pos) => pos,
+        None => {
+            return line.white().to_string();
+        }
+    };
     let log_level = &line[log_level_start..log_level_end + 1];
     let date = &line[0..log_level_start].white();
     let message = &line[log_level_end + 1..].white().bold();

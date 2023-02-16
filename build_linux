@@ -1,0 +1,7 @@
+#!/bin/bash
+if ! command -v zig -v &> /dev/null
+then
+    echo "Zig toolchain not found, exiting..."
+    exit
+fi
+cargo zigbuild --target x86_64-unknown-linux-gnu --release
