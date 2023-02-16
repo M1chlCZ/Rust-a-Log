@@ -18,3 +18,4 @@ Cargo.lock
 /dataSources/
 /dataSources.local.xml
 rocket
+/api.log
