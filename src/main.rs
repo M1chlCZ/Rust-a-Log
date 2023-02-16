@@ -30,6 +30,13 @@ fn main() -> io::Result<()> {
                 .num_args(0..=1)
                 .default_missing_value("0")
                 .help("Only show info"))
+            .arg(Arg::new("success")
+                .long("success").short('s')
+                .value_name("INT")
+                .value_parser(value_parser!(i32))
+                .num_args(0..=1)
+                .default_missing_value("0")
+                .help("Only show info"))
             .arg(Arg::new("follow")
                 .long("follow").short('f')
                 .value_name("BOOL")
@@ -56,17 +63,27 @@ fn main() -> io::Result<()> {
             }
             None => &0,
         };
-        let follow = match matches.get_one::<bool>("follow") {
-            Some(b) => b,
-            None => &false,
-        };
         let num_info = usize::try_from(*num_info_match).unwrap_or_default();
+        let num_succ_match = match matches.get_one::<i32>("success") {
+            Some(n) => {
+                filter = "SUCCESS".to_string();
+                if n > &0 { n } else { &10 }
+            }
+            None => &0,
+        };
+        let num_succ = usize::try_from(*num_succ_match).unwrap_or_default();
         let path = Path::new(matches.get_one::<String>("file").unwrap()).to_str().unwrap_or_default();
         let file = file_utils::open_file(path)?;
         let u: usize = if filter.eq("ERROR") {
             num_err
+        } else if filter.eq("SUCCESS") {
+            num_succ
         } else {
             num_info
+        };
+        let follow = match matches.get_one::<bool>("follow") {
+            Some(b) => b,
+            None => &false,
         };
         dry_run_filter(&file, u, filter.clone())?;
         if follow == &true {
