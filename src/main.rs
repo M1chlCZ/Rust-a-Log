@@ -6,9 +6,13 @@ use std::io::{self, BufRead, BufReader, ErrorKind, Seek, SeekFrom};
 use std::path::Path;
 use std::thread::sleep;
 use std::time::Duration;
-
-use crate::utils::file_utils;
 mod utils;
+use utils::file_utils;
+
+mod log_rust;
+use log_rust::{Logger, Level};
+
+
 
 fn main() -> io::Result<()> {
     let mut num_lines: usize = 10;
@@ -242,4 +246,23 @@ fn line_parse(line: &String) -> String {
     };
 
     format!("{}{}{}", date, colored_level, message)
+}
+
+//write tests for logger
+#[cfg(test)]
+mod tests {
+    use chrono::{DateTime, Local};
+    use super::*;
+
+    #[test]
+    fn test_info() {
+        let now: DateTime<Local> = Local::now();
+        let log = Logger::new("test.log").unwrap();
+        log.log_message("test", Level::Info).expect("TODO: Something wrong");
+
+        let file = file_utils::open_file("test.log").unwrap();
+        let reader = BufReader::new(file);
+        let lines: Vec<String> = reader.lines().map(|l| l.unwrap()).collect();
+        assert_eq!(lines[lines.len() - 1], format!("{} [INFO] test", now.format("%Y/%m/%d %H:%M:%S").to_string()));
+    }
 }
