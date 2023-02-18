@@ -9,5 +9,6 @@ name = "rual"
 path = "src/main.rs"
 
 [dependencies]
+chrono = "0.4.19"
 colored = "2.0.0"
 clap = "4.1.4"

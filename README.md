@@ -10,7 +10,7 @@ It has a user-friendly interface, with real-time updating and color-coded log le
 - Real-time updating of logs
 - Color-coded log levels for quick identification
 - User-friendly interface
-- Supports multiple log levels (ERROR, WARNING, INFO)
+- Supports multiple log levels (ERROR, WARNING, INFO, SUCCESS)
 - Works with any text-based log file
 
 ## Usage
