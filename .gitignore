@@ -15,7 +15,4 @@
 /dataSources.local.xml
 rocket
 /api.log
-/.idea/modules.xml
-/.idea/inspectionProfiles/Project_Default.xml
-/.idea/rual.iml
-/.idea/vcs.xml
+/.idea

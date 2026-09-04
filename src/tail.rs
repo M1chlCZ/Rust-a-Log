@@ -53,7 +53,6 @@ pub fn find_start(
     Ok(0)
 }
 
-/// Preserve an incomplete record between polls, including split UTF-8 bytes.
 pub fn read_records(
     reader: &mut impl BufRead,
     pending: &mut Vec<u8>,
@@ -77,8 +76,6 @@ fn replaced(previous: &Metadata, current: &Metadata) -> bool {
     #[cfg(not(unix))]
     {
         let _ = (previous, current);
-        // ponytail: portable std metadata has no stable file ID; add a platform
-        // file-ID API when rotation support outside Unix is needed.
         false
     }
 }
@@ -114,7 +111,6 @@ pub fn follow(
                 Err(error) => return Err(error),
             },
             Ok(_) => {}
-            // Keep the old handle while a rotating file is temporarily absent.
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
