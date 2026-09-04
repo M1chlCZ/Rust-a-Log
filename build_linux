@@ -1,7 +1,13 @@
 #!/bin/bash
-if ! command -v zig -v &> /dev/null
-then
-    echo "Zig toolchain not found, exiting..."
-    exit
-fi
-cargo zigbuild --target x86_64-unknown-linux-gnu --release
+set -euo pipefail
+cd -- "$(dirname -- "$0")"
+
+for tool in cargo rustup zig cargo-zigbuild; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "Missing $tool. See README.md for Linux cross-build setup." >&2
+        exit 1
+    fi
+done
+
+rustup target add x86_64-unknown-linux-gnu
+exec cargo zigbuild --locked --target x86_64-unknown-linux-gnu --release

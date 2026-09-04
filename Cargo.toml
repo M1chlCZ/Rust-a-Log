@@ -1,7 +1,10 @@
 [package]
 name = "rust-a-log"
 version = "0.0.1"
-edition = "2021"
+edition = "2024"
+rust-version = "1.98.1"
+description = "A small, fast, color-coded log viewer"
+license = "MIT"
 authors = ["M1chl <m1chlcz18@gmail.com>"]
 
 [[bin]]
@@ -9,6 +12,6 @@ name = "rual"
 path = "src/main.rs"
 
 [dependencies]
-chrono = "0.4.19"
-colored = "2.0.0"
-clap = "4.1.4"
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+colored = "3.1.1"
+clap = "4.6.6"

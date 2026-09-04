@@ -1,268 +1,242 @@
-use clap::{Arg, Command, value_parser};
-use colored::*;
-use std::{env, usize};
+use clap::{Arg, ArgAction, Command, value_parser};
+use colored::Colorize;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, ErrorKind, Seek, SeekFrom};
-use std::path::Path;
-use std::thread::sleep;
-use std::time::Duration;
-mod utils;
-use utils::file_utils;
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
 
-mod log_rust;
-use log_rust::{Logger, Level};
+mod tail;
 
+const LEVELS: [(&str, char, &str); 6] = [
+    ("errors", 'e', "ERROR"),
+    ("warnings", 'w', "WARNING"),
+    ("info", 'i', "INFO"),
+    ("success", 's', "SUCCESS"),
+    ("debug", 'd', "DEBUG"),
+    ("trace", 't', "TRACE"),
+];
 
-
-fn main() -> io::Result<()> {
-    let mut num_lines: usize = 10;
-    let args: Vec<String> = env::args().collect();
-    let has_flag = args.iter().any(|arg| arg.starts_with("-") || arg.starts_with("--"));
-    if has_flag {
-        let matches = Command::new("Rust-a-Log")
-            .arg(Arg::new("errors")
-                .long("errors").short('e')
-                .value_name("INT")
-                .value_parser(value_parser!(i32))
-                .num_args(0..=1)
-                .default_missing_value("0")
-                .help("Only show errors"))
-            .arg(Arg::new("info")
-                .long("info").short('i')
-                .value_name("INT")
-                .value_parser(value_parser!(i32))
-                .num_args(0..=1)
-                .default_missing_value("0")
-                .help("Only show info"))
-            .arg(Arg::new("success")
-                .long("success").short('s')
-                .value_name("INT")
-                .value_parser(value_parser!(i32))
-                .num_args(0..=1)
-                .default_missing_value("0")
-                .help("Only show info"))
-            .arg(Arg::new("follow")
-                .long("follow").short('f')
-                .value_name("BOOL")
+fn cli() -> Command {
+    let mut command = Command::new("rual")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about("Read recent log records quickly, filter them, and follow new writes")
+        .arg(
+            Arg::new("file")
+                .required(true)
+                .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(
+            Arg::new("count")
+                .value_name("LINES")
+                .value_parser(value_parser!(usize)),
+        )
+        .arg(
+            Arg::new("lines")
+                .short('n')
+                .long("lines")
+                .value_name("LINES")
+                .value_parser(value_parser!(usize))
+                .conflicts_with("count")
+                .help("Number of matching records to show (default: 10; 0: new records only)"),
+        )
+        .arg(
+            Arg::new("follow")
+                .short('f')
+                .long("follow")
                 .value_parser(value_parser!(bool))
                 .num_args(0..=1)
                 .default_missing_value("true")
-                .help("Follow the log file"))
-            .arg(Arg::new("file").index(1).required(true).value_name("STRING").help("File to read"))
-            .get_matches();
-
-        let mut filter: String = String::new();
-        let num_err_match = match matches.get_one::<i32>("errors") {
-            Some(n) => {
-                filter = "ERROR".to_string();
-                if n > &0 { n } else { &10 }
-            }
-            None => &0,
-        };
-        let num_err = usize::try_from(*num_err_match).unwrap_or_default();
-        let num_info_match = match matches.get_one::<i32>("info") {
-            Some(n) => {
-                filter = "INFO".to_string();
-                if n > &0 { n } else { &10 }
-            }
-            None => &0,
-        };
-        let num_info = usize::try_from(*num_info_match).unwrap_or_default();
-        let num_succ_match = match matches.get_one::<i32>("success") {
-            Some(n) => {
-                filter = "SUCCESS".to_string();
-                if n > &0 { n } else { &10 }
-            }
-            None => &0,
-        };
-        let num_succ = usize::try_from(*num_succ_match).unwrap_or_default();
-        let path = Path::new(matches.get_one::<String>("file").unwrap()).to_str().unwrap_or_default();
-        let file = file_utils::open_file(path)?;
-        let u: usize = if filter.eq("ERROR") {
-            num_err
-        } else if filter.eq("SUCCESS") {
-            num_succ
-        } else {
-            num_info
-        };
-        let follow = match matches.get_one::<bool>("follow") {
-            Some(b) => b,
-            None => &false,
-        };
-        dry_run_filter(&file, u, filter.clone())?;
-        if follow == &true {
-            loop_run_filter(&file, filter)?;
-        }
-
-    } else {
-        if args.len() < 2 {
-            println!("Usage: {} <log_file>", args[0]);
-            //empty error return
-            Err(io::Error::new(
-                ErrorKind::NotFound,
-                "Err: 01 | No file specified",
-            ))?;
-        }
-
-        let path = Path::new(&args[1]).to_str().unwrap();
-        let file = file_utils::open_file(path)?;
-
-        if args.len() == 3 {
-            num_lines = match args.get(2) {
-                Some(arg) => arg.parse::<usize>().unwrap_or(10),
-                None => 10,
-            };
-        }
-        dry_run(&file, num_lines)?;
-        loop_run(&file)?;
+                .default_value("true")
+                .help("Follow new records (default); --follow false exits after reading"),
+        )
+        .arg(
+            Arg::new("once")
+                .long("once")
+                .action(ArgAction::SetTrue)
+                .conflicts_with("follow")
+                .help("Print recent records and exit"),
+        )
+        .arg(
+            Arg::new("contains")
+                .short('g')
+                .long("contains")
+                .value_name("TEXT")
+                .help("Only show records containing this literal text"),
+        )
+        .arg(
+            Arg::new("ignore-case")
+                .long("ignore-case")
+                .action(ArgAction::SetTrue)
+                .requires("contains")
+                .help("Ignore case when searching text"),
+        )
+        .arg(
+            Arg::new("color")
+                .long("color")
+                .value_parser(["auto", "always", "never"])
+                .default_value("auto")
+                .help("Color output (auto respects NO_COLOR and pipes)"),
+        );
+    for (name, short, _) in LEVELS {
+        command = command.arg(
+            Arg::new(name)
+                .long(name)
+                .short(short)
+                .value_parser(value_parser!(usize))
+                .num_args(0..=1)
+                .default_missing_value("10")
+                .value_name("LINES")
+                .help("Include this level; optionally set the legacy record count"),
+        );
     }
-    Ok(())
+    command
 }
 
-fn dry_run(path: &File, lines_sub: usize) -> io::Result<()> {
-    let reader = BufReader::new(path);
-    let lines: Vec<String> = reader.lines().map(|l| l.unwrap()).collect();
-    let end: usize = lines.len();
-    let start = if lines.len() > lines_sub {
-        end - lines_sub
-    } else {
-        end - lines.len()
-    };
-
-    for line in lines[start..end].iter() {
-        let str = line_parse(&line.to_string());
-        println!("{}", str);
-    }
-    Ok(())
+struct Filter {
+    levels: Vec<&'static str>,
+    text: Option<String>,
+    ignore_case: bool,
 }
 
-fn dry_run_filter(path: &File, lines_sub: usize, filter: String) -> io::Result<()> {
-    let reader = BufReader::new(path);
-    let lines: Vec<String> = reader.lines().map(|l| l.unwrap()).collect();
-    let mut lines_filtered: Vec<String>  = Vec::new();
-    let mut end: usize = lines.len();
-    let amount_of_lines = if lines_sub == 0 { 10 } else { lines_sub };
-    let mut lines_parsed = 0;
-    while lines_parsed <= amount_of_lines {
-        if end == 0 { break;}
-        let line = match lines.get(end - 1) {
-            Some(l) => l,
-            None => break,
-        };
-        if line.contains(&filter) {
-            end -= 1;
-            lines_parsed += 1;
-            lines_filtered.push(line.clone());
-        }else{
-            end -= 1;
-        }
+impl Filter {
+    fn matches(&self, line: &str) -> bool {
+        (self.levels.is_empty()
+            || level_span(line).is_some_and(|(_, _, level)| self.levels.contains(&level)))
+            && self.text.as_ref().is_none_or(|text| {
+                if self.ignore_case {
+                    line.to_lowercase().contains(text)
+                } else {
+                    line.contains(text)
+                }
+            })
     }
-    lines_filtered.reverse();
-    for line in lines_filtered.iter() {
-        let str = line_parse(&line.to_string());
-        println!("{}", str);
-    }
-    Ok(())
 }
 
-fn loop_run(file: &File) -> io::Result<()> {
-    let mut reader = BufReader::new(file);
-    loop {
-        reader.seek(SeekFrom::End(0)).unwrap();
-        let original_file_size = reader.seek(SeekFrom::Current(0)).unwrap();
-
-        sleep(Duration::from_secs(1));
-
-        let mut reader = BufReader::new(file);
-
-        let current_file_size = reader.seek(SeekFrom::End(0)).unwrap();
-        if current_file_size == original_file_size {
+// Find a recognized level even when the record starts with a bracketed timestamp.
+fn level_span(line: &str) -> Option<(usize, usize, &'static str)> {
+    for (start, _) in line.match_indices('[') {
+        let rest = &line[start + 1..];
+        // Bound the search so malformed records with many '[' stay linear.
+        let Some(length) = rest
+            .as_bytes()
+            .iter()
+            .take(8)
+            .position(|&byte| byte == b']')
+        else {
             continue;
-        }
-
-        reader.seek(SeekFrom::Start(original_file_size)).unwrap();
-
-        for line in reader.lines() {
-            let str = line_parse(&line.unwrap());
-            println!("{}", str);
-        }
+        };
+        let level = match &rest[..length] {
+            "ERROR" => "ERROR",
+            "WARN" | "WARNING" => "WARNING",
+            "INFO" => "INFO",
+            "SUCCESS" => "SUCCESS",
+            "DEBUG" => "DEBUG",
+            "TRACE" => "TRACE",
+            _ => continue,
+        };
+        return Some((start, start + length + 2, level));
     }
+    None
 }
 
-fn loop_run_filter(file: &File, filter: String) -> io::Result<()> {
-    let mut reader = BufReader::new(file);
-    loop {
-        reader.seek(SeekFrom::End(0)).unwrap();
-        let original_file_size = reader.seek(SeekFrom::Current(0)).unwrap();
+fn print_record(output: &mut impl Write, line: &str) -> io::Result<()> {
+    let Some((start, end, level)) = level_span(line) else {
+        return writeln!(output, "{line}");
+    };
+    let label = &line[start..end];
+    let label = match level {
+        "ERROR" => label.red().bold(),
+        "WARNING" => label.yellow().bold(),
+        "SUCCESS" => label.green().bold(),
+        "DEBUG" => label.cyan().bold(),
+        "TRACE" => label.magenta().bold(),
+        _ => label.bright_white().bold(),
+    };
+    writeln!(output, "{}{}{}", &line[..start], label, &line[end..])
+}
 
-        sleep(Duration::from_secs(1));
-
-        let mut reader = BufReader::new(file);
-
-        let current_file_size = reader.seek(SeekFrom::End(0)).unwrap();
-        if current_file_size == original_file_size {
-            continue;
-        }
-
-        reader.seek(SeekFrom::Start(original_file_size)).unwrap();
-
-        for line in reader.lines() {
-            let str = line_parse(&line.unwrap());
-            if !str.contains(&filter) {
-                continue;
+fn run() -> io::Result<()> {
+    let args = cli().get_matches();
+    match args.get_one::<String>("color").map(String::as_str) {
+        Some("always") => colored::control::set_override(true),
+        Some("never") => colored::control::set_override(false),
+        _ => {}
+    }
+    let path = args.get_one::<PathBuf>("file").unwrap();
+    let count = args
+        .get_one::<usize>("lines")
+        .or_else(|| args.get_one::<usize>("count"))
+        .copied()
+        .unwrap_or_else(|| {
+            LEVELS
+                .iter()
+                .filter_map(|(name, _, _)| args.get_one::<usize>(name).copied())
+                .max()
+                .unwrap_or(10)
+        });
+    let ignore_case = args.get_flag("ignore-case");
+    let filter = Filter {
+        levels: LEVELS
+            .iter()
+            .filter(|(name, _, _)| args.contains_id(name))
+            .map(|(_, _, level)| *level)
+            .collect(),
+        text: args.get_one::<String>("contains").map(|text| {
+            if ignore_case {
+                text.to_lowercase()
+            } else {
+                text.clone()
             }
-            println!("{}", str);
-        }
+        }),
+        ignore_case,
+    };
+    let follow = !args.get_flag("once") && *args.get_one::<bool>("follow").unwrap();
+    let mut file = File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a regular log file",
+        ));
     }
+    let end = file.metadata()?.len();
+    let start = tail::find_start(&mut file, end, count, |line| filter.matches(line))?;
+    file.seek(SeekFrom::Start(start))?;
+    let mut output = io::BufWriter::new(io::stdout().lock());
+    let mut emit = |line: &str| {
+        if filter.matches(line) {
+            print_record(&mut output, line)?;
+        }
+        Ok(())
+    };
+    let mut pending = Vec::new();
+    // Limit the initial read to the snapshot used by the backwards scan.
+    tail::read_records(
+        &mut BufReader::new((&mut file).take(end - start)),
+        &mut pending,
+        &mut emit,
+    )?;
+    if !follow && !pending.is_empty() {
+        emit(&String::from_utf8_lossy(&pending))?;
+    }
+    output.flush()?;
+    if follow {
+        tail::follow(path, file, pending, |line| {
+            if filter.matches(line) {
+                print_record(&mut output, line)?;
+                output.flush()?;
+            }
+            Ok(())
+        })?;
+    }
+    Ok(())
 }
 
-fn line_parse(line: &String) -> String {
-    if line.is_empty() {
-        return "".white().to_string();
-    }
-    let log_level_start = match line.find("[") {
-        Some(pos) => pos,
-        None => {
-            return line.white().to_string();
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("rual: {error}");
+            std::process::ExitCode::FAILURE
         }
-    };
-
-    let log_level_end = match line.find("]") {
-        Some(pos) => pos,
-        None => {
-            return line.white().to_string();
-        }
-    };
-    let log_level = &line[log_level_start..log_level_end + 1];
-    let date = &line[0..log_level_start].white();
-    let message = &line[log_level_end + 1..].white().bold();
-
-    let colored_level = match log_level {
-        "[ERROR]" => log_level.red().bold(),
-        "[WARNING]" => log_level.yellow().bold(),
-        "[INFO]" => log_level.bright_white().bold(),
-        "[SUCCESS]" => log_level.green().bold(),
-        _ => log_level.normal(),
-    };
-
-    format!("{}{}{}", date, colored_level, message)
-}
-
-//write tests for logger
-#[cfg(test)]
-mod tests {
-    use chrono::{DateTime, Local};
-    use super::*;
-
-    #[test]
-    fn test_info() {
-        let now: DateTime<Local> = Local::now();
-        let log = Logger::new("test.log").unwrap();
-        log.log_message("test", Level::Info).expect("TODO: Something wrong");
-
-        let file = file_utils::open_file("test.log").unwrap();
-        let reader = BufReader::new(file);
-        let lines: Vec<String> = reader.lines().map(|l| l.unwrap()).collect();
-        assert_eq!(lines[lines.len() - 1], format!("{} [INFO] test", now.format("%Y/%m/%d %H:%M:%S").to_string()));
     }
 }
