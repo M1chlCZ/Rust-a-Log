@@ -14,6 +14,12 @@ cargo build --locked --release
 cargo install --locked --path .
 ```
 
+The published CLI can be installed directly from crates.io:
+
+```sh
+cargo install rust-a-log --locked
+```
+
 The project pins **Rust 1.98.1**, uses edition 2024, and includes `Cargo.lock` for reproducible dependency resolution. Rustup installs the pinned compiler when you first build. The local binary is `target/release/rual` (`rual.exe` on Windows).
 
 For a native Linux build, use the same commands on Linux. To cross-compile from macOS to x86-64 Linux, install [Zig](https://ziglang.org/download/) and [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild), then run:
@@ -87,7 +93,15 @@ Five alternating runs after warming the file cache, measured with `/usr/bin/time
 
 ## Logger library
 
-The existing file logger is also available as a Rust library:
+The logger is published on crates.io as `rust-a-log` (the Rust import name is
+`rust_a_log`). Add the dependency to your application:
+
+```toml
+[dependencies]
+rust-a-log = "0.0.1"
+```
+
+Then import and use it:
 
 ```rust,no_run
 use rust_a_log::{Level, Logger};
