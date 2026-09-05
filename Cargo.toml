@@ -5,6 +5,13 @@ edition = "2024"
 rust-version = "1.98.1"
 description = "A small, fast, color-coded log viewer"
 license = "MIT"
+repository = "https://github.com/M1chlCZ/Rust-a-Log"
+homepage = "https://github.com/M1chlCZ/Rust-a-Log"
+documentation = "https://docs.rs/rust-a-log"
+readme = "README.md"
+keywords = ["log", "logging", "tail", "cli"]
+categories = ["command-line-utilities", "development-tools::debugging"]
+exclude = [".github/**", ".idea/**", "build_linux"]
 authors = ["M1chl <m1chlcz18@gmail.com>"]
 
 [[bin]]
