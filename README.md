@@ -128,6 +128,13 @@ CI runs these checks on Linux, macOS and Windows. `src/main.rs` owns arguments, 
 
 For compiler updates, change `rust-toolchain.toml` and `package.rust-version` in `Cargo.toml`, then run the checks above. For dependency updates, run `cargo update`, review `Cargo.lock`, and run the checks before committing the lockfile.
 
+## Support
+
+If this project helps you, you can support its development.
+
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/m1chl)
+<a href="https://buymeacoffee.com/xdujifyzvt"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy me a coffee" height="30"></a>
+
 ## License
 
 [MIT](LICENSE).
