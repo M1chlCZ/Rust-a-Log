@@ -4,6 +4,19 @@ A small command-line log viewer: read recent records, filter them, and follow ne
 
 ![use case](misc/pic.png)
 
+## Quick start
+
+Install the current source with [Rust](https://rustup.rs/):
+
+```sh
+cargo install --git https://github.com/M1chlCZ/Rust-a-Log --locked
+rual app.log -e -w -n 20
+```
+
+This shows the last 20 errors or warnings and follows new records. Press Ctrl+C to stop.
+For a one-time text search, run `rual app.log -g timeout --ignore-case --once`.
+See [Usage](#usage) for all options and [Records and following](#records-and-following) for file format and rotation limits.
+
 ## Build and install
 
 Install [Rust with rustup](https://rustup.rs/), then run from this repository:
@@ -138,3 +151,5 @@ If this project helps you, you can support its development.
 ## License
 
 [MIT](LICENSE).
+
+If this project helps you, consider giving it a star. Bug reports and contributions are welcome.
