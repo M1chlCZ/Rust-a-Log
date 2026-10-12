@@ -1,10 +1,13 @@
 use clap::{Arg, ArgAction, Command, value_parser};
 use colored::Colorize;
 use std::fs::File;
-use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
+mod capture;
+mod live;
 mod tail;
+mod tui;
 
 const LEVELS: [(&str, char, &str); 6] = [
     ("errors", 'e', "ERROR"),
@@ -17,6 +20,8 @@ const LEVELS: [(&str, char, &str); 6] = [
 
 fn cli() -> Command {
     let mut command = Command::new("rual")
+        .subcommand_negates_reqs(true)
+        .args_conflicts_with_subcommands(true)
         .version(env!("CARGO_PKG_VERSION"))
         .about("Read recent log records quickly, filter them, and follow new writes")
         .arg(
@@ -75,6 +80,34 @@ fn cli() -> Command {
                 .value_parser(["auto", "always", "never"])
                 .default_value("auto")
                 .help("Color output (auto respects NO_COLOR and pipes)"),
+        )
+        .subcommand(live_command(
+            "listen",
+            "Receive application logs as a plain stream",
+        ))
+        .subcommand(live_command(
+            "tui",
+            "Browse local application sources and recent logs",
+        ))
+        .subcommand(
+            Command::new("run")
+                .about("Capture stdout and stderr from a command")
+                .arg(Arg::new("name").long("name").default_value("process"))
+                .arg(Arg::new("json").long("json").action(ArgAction::SetTrue))
+                .arg(
+                    Arg::new("tui")
+                        .long("tui")
+                        .action(ArgAction::SetTrue)
+                        .conflicts_with("json"),
+                )
+                .arg(
+                    Arg::new("command")
+                        .required(true)
+                        .num_args(1..)
+                        .trailing_var_arg(true)
+                        .allow_hyphen_values(true)
+                        .value_parser(value_parser!(std::ffi::OsString)),
+                ),
         );
     for (name, short, _) in LEVELS {
         command = command.arg(
@@ -89,6 +122,31 @@ fn cli() -> Command {
         );
     }
     command
+}
+
+fn live_command(name: &'static str, help: &'static str) -> Command {
+    Command::new(name)
+        .about(help)
+        .arg(
+            Arg::new("bind")
+                .long("bind")
+                .default_value(live::DEFAULT_BIND)
+                .value_parser(value_parser!(std::net::SocketAddr))
+                .help("Loopback address to receive logs"),
+        )
+        .arg(
+            Arg::new("json")
+                .long("json")
+                .action(ArgAction::SetTrue)
+                .help("Write one JSON record per line (listen only)"),
+        )
+        .arg(
+            Arg::new("file")
+                .long("file")
+                .action(ArgAction::Append)
+                .value_parser(value_parser!(PathBuf))
+                .help("Also follow this log file"),
+        )
 }
 
 struct Filter {
@@ -139,6 +197,17 @@ fn level_span(line: &str) -> Option<(usize, usize, &'static str)> {
 }
 
 fn print_record(output: &mut impl Write, line: &str) -> io::Result<()> {
+    let safe;
+    let line = if io::stdout().is_terminal()
+        && line
+            .chars()
+            .any(|c| c.is_control() && c != '\t' && c != '\n')
+    {
+        safe = live::safe_text(line);
+        safe.as_str()
+    } else {
+        line
+    };
     let Some((start, end, level)) = level_span(line) else {
         return writeln!(output, "{line}");
     };
@@ -154,8 +223,35 @@ fn print_record(output: &mut impl Write, line: &str) -> io::Result<()> {
     writeln!(output, "{}{}{}", &line[..start], label, &line[end..])
 }
 
-fn run() -> io::Result<()> {
+fn run() -> io::Result<u8> {
     let args = cli().get_matches();
+    if let Some((command, options)) = args.subcommand() {
+        if command == "run" {
+            return capture::run_command(options);
+        }
+        if command == "tui" && (!io::stdin().is_terminal() || !io::stdout().is_terminal()) {
+            return Err(io::Error::other(
+                "TUI requires an interactive terminal; use rual listen for pipes",
+            ));
+        }
+        let server = live::Server::bind(*options.get_one::<std::net::SocketAddr>("bind").unwrap())?;
+        eprintln!("rual listening on {}", server.address);
+        if let Some(files) = options.get_many::<PathBuf>("file") {
+            for path in files {
+                capture::follow_file(path, server.state.clone(), server.stop.clone())?;
+            }
+        }
+        if command == "tui" {
+            tui::run(&server.state, &server.address.to_string())?;
+        } else {
+            let interrupted = capture::cancellation()?;
+            capture::print_live(&server.state, options.get_flag("json"), || {
+                interrupted.load(std::sync::atomic::Ordering::Relaxed)
+            })?;
+            return Ok(130);
+        }
+        return Ok(0);
+    }
     match args.get_one::<String>("color").map(String::as_str) {
         Some("always") => colored::control::set_override(true),
         Some("never") => colored::control::set_override(false),
@@ -190,6 +286,15 @@ fn run() -> io::Result<()> {
         ignore_case,
     };
     let follow = !args.get_flag("once") && *args.get_one::<bool>("follow").unwrap();
+    if path == std::path::Path::new("-") {
+        if args.contains_id("lines") || args.contains_id("count") {
+            return Err(io::Error::other(
+                "stdin streams all records; --lines and positional counts require a file",
+            ));
+        }
+        capture::stdin(&filter)?;
+        return Ok(0);
+    }
     let mut file = File::open(path)?;
     if !file.metadata()?.is_file() {
         return Err(io::Error::new(
@@ -198,7 +303,11 @@ fn run() -> io::Result<()> {
         ));
     }
     let end = file.metadata()?.len();
-    let start = tail::find_start(&mut file, end, count, |line| filter.matches(line))?;
+    let start = if filter.levels.is_empty() && filter.text.is_none() {
+        tail::find_plain_start(&mut file, end, count)?
+    } else {
+        tail::find_start(&mut file, end, count, |line| filter.matches(line))?
+    };
     file.seek(SeekFrom::Start(start))?;
     let mut output = io::BufWriter::new(io::stdout().lock());
     let mut emit = |line: &str| {
@@ -227,12 +336,12 @@ fn run() -> io::Result<()> {
             Ok(())
         })?;
     }
-    Ok(())
+    Ok(0)
 }
 
 fn main() -> std::process::ExitCode {
     match run() {
-        Ok(()) => std::process::ExitCode::SUCCESS,
+        Ok(code) => std::process::ExitCode::from(code),
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("rual: {error}");

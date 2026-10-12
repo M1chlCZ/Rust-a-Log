@@ -21,3 +21,35 @@ jobs:
       - run: cargo test --locked
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo build --locked --release
+      - run: cargo check --locked --no-default-features
+
+  adapters:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: cargo build --locked
+      - run: go test -race ./...
+        working-directory: adapters/go
+      - run: node --test
+        working-directory: adapters/node
+      - run: npm exec --yes --package=typescript -- tsc --noEmit --strict --module NodeNext --moduleResolution NodeNext typecheck.ts
+        working-directory: adapters/node
+      - run: dotnet run --project Example/Example.csproj -- --check
+        working-directory: adapters/dotnet
+      - run: mvn -B test
+        working-directory: adapters/java
+      - run: python3 scripts/check-adapters.py

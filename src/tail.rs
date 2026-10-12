@@ -15,6 +15,36 @@ fn text(bytes: &[u8]) -> Cow<'_, str> {
     String::from_utf8_lossy(bytes)
 }
 
+/// Unfiltered tails need only newline positions, not decoded/copied records.
+pub fn find_plain_start(
+    reader: &mut (impl Read + Seek),
+    end: u64,
+    count: usize,
+) -> io::Result<u64> {
+    if count == 0 {
+        return Ok(end);
+    }
+    let mut position = end;
+    let mut block = [0; BLOCK_SIZE];
+    let mut found = 0;
+    while position > 0 {
+        let size = position.min(BLOCK_SIZE as u64) as usize;
+        position -= size as u64;
+        reader.seek(SeekFrom::Start(position))?;
+        reader.read_exact(&mut block[..size])?;
+        for (index, &byte) in block[..size].iter().enumerate().rev() {
+            let offset = position + index as u64;
+            if byte == b'\n' && offset + 1 != end {
+                found += 1;
+                if found == count {
+                    return Ok(offset + 1);
+                }
+            }
+        }
+    }
+    Ok(0)
+}
+
 /// Scan backwards until enough matching records are found, keeping one block
 /// and one record in memory. The caller supplies a fixed EOF for a growing file.
 pub fn find_start(
@@ -56,9 +86,34 @@ pub fn find_start(
 pub fn read_records(
     reader: &mut impl BufRead,
     pending: &mut Vec<u8>,
-    mut emit: impl FnMut(&str) -> io::Result<()>,
+    emit: impl FnMut(&str) -> io::Result<()>,
 ) -> io::Result<()> {
-    while reader.read_until(b'\n', pending)? != 0 {
+    read_records_bounded(reader, pending, emit, usize::MAX)
+}
+
+pub fn read_records_bounded(
+    reader: &mut impl BufRead,
+    pending: &mut Vec<u8>,
+    mut emit: impl FnMut(&str) -> io::Result<()>,
+    limit: usize,
+) -> io::Result<()> {
+    loop {
+        let bytes = if limit == usize::MAX {
+            reader.read_until(b'\n', pending)?
+        } else {
+            Read::by_ref(reader)
+                .take((limit + 1 - pending.len()) as u64)
+                .read_until(b'\n', pending)?
+        };
+        if pending.len() > limit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "live file record exceeds 64 KiB",
+            ));
+        }
+        if bytes == 0 {
+            break;
+        }
         if pending.ends_with(b"\n") {
             emit(&text(pending))?;
             pending.clear();
@@ -83,17 +138,28 @@ fn replaced(previous: &Metadata, current: &Metadata) -> bool {
 pub fn follow(
     path: &Path,
     file: File,
+    pending: Vec<u8>,
+    emit: impl FnMut(&str) -> io::Result<()>,
+) -> io::Result<()> {
+    follow_until(path, file, pending, emit, || true, usize::MAX)
+}
+
+pub fn follow_until(
+    path: &Path,
+    file: File,
     mut pending: Vec<u8>,
     mut emit: impl FnMut(&str) -> io::Result<()>,
+    running: impl Fn() -> bool,
+    limit: usize,
 ) -> io::Result<()> {
     let mut reader = BufReader::new(file);
-    loop {
+    while running() {
         let metadata = reader.get_ref().metadata()?;
         if metadata.len() < reader.stream_position()? {
             reader.seek(SeekFrom::Start(0))?;
             pending.clear();
         }
-        read_records(&mut reader, &mut pending, &mut emit)?;
+        read_records_bounded(&mut reader, &mut pending, &mut emit, limit)?;
         match fs::metadata(path) {
             Ok(current) if replaced(&metadata, &current) => match File::open(path) {
                 Ok(file) => {
@@ -116,6 +182,7 @@ pub fn follow(
         }
         thread::sleep(Duration::from_millis(200));
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -187,6 +254,7 @@ mod tests {
         let mut reader = GuardedFile(Cursor::new(bytes));
         assert_eq!(find_start(&mut reader, end, 1, |_| true).unwrap(), end - 12);
         assert_eq!(find_start(&mut reader, end, 0, |_| true).unwrap(), end);
+        assert_eq!(find_plain_start(&mut reader, end, 1).unwrap(), end - 12);
     }
 
     #[test]
@@ -206,5 +274,42 @@ mod tests {
         }
         assert_eq!(lines, ["[INFO] ž partial", "next"]);
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn unfiltered_tail_matches_lines_without_decoding_large_records() {
+        for input in ["", "\n", "\n\n", "a\nb", "a\nb\n", "a\r\nb\r\n", "ž\n\nz"] {
+            for count in [0, 1, 2, 10] {
+                let all: Vec<_> = input.lines().collect();
+                let start = find_plain_start(
+                    &mut Cursor::new(input.as_bytes()),
+                    input.len() as u64,
+                    count,
+                )
+                .unwrap();
+                assert_eq!(
+                    input[start as usize..].lines().collect::<Vec<_>>(),
+                    all[all.len().saturating_sub(count)..]
+                );
+            }
+        }
+        let input = format!("{}\nlast\n", "x".repeat(BLOCK_SIZE * 4));
+        let start =
+            find_plain_start(&mut Cursor::new(input.as_bytes()), input.len() as u64, 1).unwrap();
+        assert_eq!(&input[start as usize..], "last\n");
+    }
+
+    #[test]
+    fn live_file_reader_limits_incomplete_records_without_limiting_legacy_files() {
+        let bytes = vec![b'x'; 70_000];
+        let mut pending = Vec::new();
+        assert!(
+            read_records_bounded(&mut Cursor::new(&bytes), &mut pending, |_| Ok(()), 65_536)
+                .is_err()
+        );
+        assert_eq!(pending.len(), 65_537);
+        pending.clear();
+        read_records(&mut Cursor::new(&bytes), &mut pending, |_| Ok(())).unwrap();
+        assert_eq!(pending.len(), bytes.len());
     }
 }

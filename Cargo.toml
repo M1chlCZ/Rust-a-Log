@@ -1,6 +1,6 @@
 [package]
 name = "rust-a-log"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.98.1"
 description = "A small, fast, color-coded log viewer"
@@ -11,14 +11,32 @@ documentation = "https://docs.rs/rust-a-log"
 readme = "README.md"
 keywords = ["log", "logging", "tail", "cli"]
 categories = ["command-line-utilities", "development-tools::debugging"]
-exclude = [".github/**", ".idea/**", "build_linux"]
+exclude = [".github/**", ".idea/**", "build_linux", "adapters/**"]
 authors = ["M1chl <m1chlcz18@gmail.com>"]
 
 [[bin]]
 name = "rual"
 path = "src/main.rs"
+required-features = ["cli"]
+
+[features]
+default = ["cli"]
+cli = ["dep:clap", "dep:colored", "dep:serde", "dep:serde_json", "dep:ratatui", "dep:crossterm", "dep:ctrlc"]
 
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
-colored = "3.1.1"
-clap = "4.6.6"
+colored = { version = "3.1.1", optional = true }
+clap = { version = "4.6.6", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29"], optional = true }
+crossterm = { version = "0.29", optional = true }
+ctrlc = { version = "3.5", optional = true }
+
+[[test]]
+name = "cli"
+required-features = ["cli"]
+
+[[test]]
+name = "streams"
+required-features = ["cli"]

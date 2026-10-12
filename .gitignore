@@ -16,3 +16,7 @@
 rocket
 /api.log
 /.idea
+/adapters/dotnet/**/bin/
+/adapters/dotnet/**/obj/
+/adapters/java/target/
+/adapters/node/node_modules/
