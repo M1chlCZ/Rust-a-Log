@@ -191,6 +191,34 @@ If `RUAL_TOKEN` is set, local clients also need it. Without a token, loopback mo
 Allow the receiver port through your host firewall only for the intended LAN machines.
 Bind a specific LAN IP to avoid unrelated interfaces. The receiver does not change firewall rules or start other services.
 
+### Windows receiver and Mac viewer
+
+Extract the Windows binary into a permanent directory. Keep that path when you upgrade the executable.
+If the receiver uses the Windows Private network profile, add a rule for the executable and viewer IP.
+Run this once in an Administrator PowerShell window. Replace the path and addresses with your actual values:
+
+```powershell
+$rual = 'C:\Tools\rual\rual.exe'
+$receiver = '192.168.1.20'
+$viewer = '192.168.1.30'
+New-NetFirewallRule -Name 'Rust-a-Log-LAN' -DisplayName 'Rust-a-Log LAN viewer' `
+  -Direction Inbound -Action Allow -Profile Private -Program $rual `
+  -Protocol TCP -LocalPort 7331 -LocalAddress $receiver -RemoteAddress $viewer
+```
+
+The rule allows one viewer, one receiver address, and one TCP port on the Private profile.
+If an address or executable path changes, update the rule. Keep the firewall enabled.
+Run the receiver in PowerShell with the same token that your Mac viewer uses:
+
+```powershell
+$env:RUAL_TOKEN = 'the-same-random-token-as-the-viewer'
+& $rual listen --bind "${receiver}:7331"
+```
+
+On the Mac, set `RUAL_TOKEN` and run `rual connect 192.168.1.20:7331 --tui`.
+This connection uses direct TCP. An SSH tunnel is optional.
+Direct Windows-to-Mac TUI viewing passed with version 0.1.1, including source selection, search, pause, and structured fields.
+
 TCP sends the token and log data without encryption. Use direct TCP only on a trusted LAN.
 For an encrypted connection, keep the receiver on loopback and create an SSH tunnel:
 
