@@ -254,6 +254,58 @@ mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
 
+    fn request_fixture(message: &str) -> (Vec<Event>, Vec<Source>) {
+        let mut state = live::State::default();
+        let id = state.register("doglio-backend-lan".into(), "go".into()).unwrap();
+        state.push(id, live::Record {
+            timestamp: "2026-10-12T16:09:46.193369077Z".into(),
+            level: "INFO".into(),
+            message: message.into(),
+            fields: serde_json::json!({
+                "request_id": "test-42", "method": "GET", "route": "/admin/orders",
+                "status": 200, "duration_ms": 12, "context": {"attempt": 1}
+            }),
+        });
+        (state.events.into_iter().collect(), state.sources.into_iter().collect())
+    }
+
+    fn render(view: &View, events: &[Event], sources: &[Source], width: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, 18)).unwrap();
+        terminal.draw(|frame| draw(frame, view, events, sources, "rual")).unwrap();
+        terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect()
+    }
+
+    #[test]
+    fn request_fields_are_visible_without_opening_details_or_repeating_source() {
+        let (events, sources) = request_fixture("http_request");
+        for source in [0, 1] {
+            let screen = render(&View { source, ..View::default() }, &events, &sources, 300);
+            assert!(screen.contains("16:09:46 [INFO] http_request method=\"GET\" route=\"/admin/orders\" status=200 duration_ms=12"), "{screen}");
+            assert!(screen.contains("request_id=\"test-42\""));
+            assert!(screen.contains("context={\"attempt\":1}"));
+            assert_eq!(screen.matches("doglio-backend-lan").count(), 1);
+            assert!(!screen.contains("2026-10-12T"));
+        }
+    }
+
+    #[test]
+    fn long_multiline_messages_are_complete_safe_single_line_rows() {
+        let message = format!("{}\nnext\tcolumn\x1b[2J", "a".repeat(500));
+        let (events, sources) = request_fixture(&message);
+        let screen = render(&View::default(), &events, &sources, 1600);
+        assert!(screen.contains(&format!("{}\\nnext\\tcolumn�[2J", "a".repeat(500))));
+        assert!(!screen.contains('\x1b'));
+    }
+
+    #[test]
+    fn detail_preserves_the_full_timestamp_and_source_context() {
+        let (events, sources) = request_fixture("http_request");
+        let screen = render(&View { details: true, ..View::default() }, &events, &sources, 180);
+        let details = screen.split("Record details").nth(1).unwrap();
+        assert!(details.contains("2026-10-12T16:09:46.193369077Z"));
+        assert!(details.contains("doglio-backend-lan"));
+    }
+
     #[test]
     fn paused_source_and_level_filters_clamp_the_record_selection() {
         let mut state = live::State::default();
