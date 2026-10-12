@@ -31,7 +31,7 @@ test('registration, fields, multiline messages, and bounded close', async () => 
 });
 
 test('unavailable receiver and oversize records do not crash or block the app', async () => {
-  assert.throws(() => createLogger({ host: '0.0.0.0' }), /loopback/);
+  assert.throws(() => createLogger({ host: '192.168.1.2', token: '' }), /token/);
   const server = net.createServer();
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');

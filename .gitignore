@@ -20,3 +20,4 @@ rocket
 /adapters/dotnet/**/obj/
 /adapters/java/target/
 /adapters/node/node_modules/
+__pycache__/

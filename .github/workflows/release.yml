@@ -1,0 +1,78 @@
+name: Release binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Tag to build (for example v0.1.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          path: source
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Install Linux static linker
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Install Rust target
+        working-directory: source
+        run: rustup target add ${{ matrix.target }}
+      - name: Native checks
+        working-directory: source
+        run: cargo test --locked --target ${{ matrix.target }}
+      - name: Build release
+        working-directory: source
+        run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Archive binary and documentation
+        env:
+          RELEASE_REF: ${{ inputs.ref }}
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: python scripts/package-release.py
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rual-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  checksums:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: rual-*
+          merge-multiple: true
+          path: dist
+      - run: sha256sum *.tar.gz *.zip > SHA256SUMS
+        working-directory: dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-binaries
+          path: dist/*
+          if-no-files-found: error

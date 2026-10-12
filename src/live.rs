@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::VecDeque;
-use std::io::{self, BufRead, BufReader};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::io::{self, BufRead, BufReader, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -14,6 +14,8 @@ pub const MAX_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CLIENTS: usize = 32;
 const MAX_SOURCES: usize = 128;
 pub const DEFAULT_BIND: &str = "127.0.0.1:7331";
+// A bounded physical file line can expand sixfold through JSON escaping.
+const MAX_RESPONSE: usize = MAX_FRAME * 6 + 1024;
 
 fn timestamp() -> String {
     chrono::Utc::now().to_rfc3339()
@@ -79,6 +81,13 @@ enum Wire {
         version: u8,
         source: String,
         language: String,
+        #[serde(default)]
+        token: Option<String>,
+    },
+    Subscribe {
+        version: u8,
+        #[serde(default)]
+        token: Option<String>,
     },
     Log {
         #[serde(flatten)]
@@ -89,7 +98,7 @@ enum Wire {
     },
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Event {
     pub sequence: u64,
     pub session: u64,
@@ -101,7 +110,7 @@ pub struct Event {
     bytes: usize,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Source {
     pub id: u64,
     pub name: String,
@@ -125,6 +134,53 @@ pub struct State {
 }
 
 pub type Shared = Arc<Mutex<State>>;
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum Response {
+    Ready {
+        version: u8,
+    },
+    Status {
+        sources: VecDeque<Source>,
+        evicted: u64,
+        rejected: u64,
+        adapter_dropped: u64,
+        last_error: String,
+    },
+    Event {
+        event: Event,
+    },
+}
+
+pub fn token_from_env(name: &str) -> io::Result<Option<String>> {
+    match std::env::var(name) {
+        Ok(token)
+            if !token.is_empty() && token.len() <= 256 && !token.chars().any(char::is_control) =>
+        {
+            Ok(Some(token))
+        }
+        Err(std::env::VarError::NotPresent) if name == "RUAL_TOKEN" => Ok(None),
+        _ => Err(invalid(
+            "token environment variable must contain 1 to 256 bytes without control characters",
+        )),
+    }
+}
+
+fn authenticated(expected: &Option<String>, supplied: &Option<String>) -> bool {
+    let Some(expected) = expected else {
+        return true;
+    };
+    let supplied = supplied.as_deref().unwrap_or("");
+    let mut difference = expected.len() ^ supplied.len();
+    for index in 0..256 {
+        difference |= usize::from(
+            expected.as_bytes().get(index).copied().unwrap_or(0)
+                ^ supplied.as_bytes().get(index).copied().unwrap_or(0),
+        );
+    }
+    difference == 0
+}
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -193,7 +249,7 @@ impl State {
 
     fn reject(&mut self, error: impl ToString) {
         self.rejected += 1;
-        self.last_error = error.to_string();
+        self.last_error = error.to_string().chars().take(512).collect();
     }
 }
 
@@ -211,36 +267,44 @@ pub fn safe_text(text: &str) -> String {
 
 /// Limit framing before decoding JSON. Timeouts preserve fragmented records.
 pub fn frame(reader: &mut impl BufRead, pending: &mut Vec<u8>) -> io::Result<Option<Vec<u8>>> {
-    loop {
-        let buffer = match reader.fill_buf() {
-            Ok(buffer) => buffer,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                return Ok(None);
-            }
-            Err(error) => return Err(error),
-        };
-        if buffer.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "stream closed",
-            ));
+    frame_limit(reader, pending, MAX_FRAME)
+}
+
+fn frame_limit(
+    reader: &mut impl BufRead,
+    pending: &mut Vec<u8>,
+    limit: usize,
+) -> io::Result<Option<Vec<u8>>> {
+    let buffer = match reader.fill_buf() {
+        Ok(buffer) => buffer,
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ) =>
+        {
+            return Ok(None);
         }
-        let newline = buffer.iter().position(|&byte| byte == b'\n');
-        let size = newline.map_or(buffer.len(), |index| index + 1);
-        if pending.len() + size > MAX_FRAME {
-            return Err(invalid("record exceeds 64 KiB"));
-        }
-        pending.extend_from_slice(&buffer[..size]);
-        reader.consume(size);
-        if newline.is_some() {
-            return Ok(Some(std::mem::take(pending)));
-        }
+        Err(error) => return Err(error),
+    };
+    if buffer.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "stream closed",
+        ));
     }
+    let newline = buffer.iter().position(|&byte| byte == b'\n');
+    let size = newline.map_or(buffer.len(), |index| index + 1);
+    if pending.len() + size > limit {
+        return Err(invalid("frame exceeds size limit"));
+    }
+    pending.extend_from_slice(&buffer[..size]);
+    reader.consume(size);
+    if newline.is_some() {
+        return Ok(Some(std::mem::take(pending)));
+    }
+    // Check cancellation and handshake deadlines between partial reads.
+    Ok(None)
 }
 
 pub struct Server {
@@ -251,9 +315,11 @@ pub struct Server {
 }
 
 impl Server {
-    pub fn bind(address: SocketAddr) -> io::Result<Self> {
-        if !address.ip().is_loopback() {
-            return Err(invalid("receiver must bind to a loopback address"));
+    pub fn bind(address: SocketAddr, token: Option<String>) -> io::Result<Self> {
+        if !address.ip().is_loopback() && token.is_none() {
+            return Err(invalid(
+                "LAN receiver requires a token in RUAL_TOKEN or --token-env",
+            ));
         }
         let listener = TcpListener::bind(address)?;
         let address = listener.local_addr()?;
@@ -273,10 +339,14 @@ impl Server {
                             continue;
                         }
                         active.fetch_add(1, Ordering::Relaxed);
-                        let (state, stop, active) =
-                            (shared.clone(), shutdown.clone(), active.clone());
+                        let (state, stop, active, token) = (
+                            shared.clone(),
+                            shutdown.clone(),
+                            active.clone(),
+                            token.clone(),
+                        );
                         workers.push(thread::spawn(move || {
-                            handle(stream, &state, &stop);
+                            handle(stream, &state, &stop, &token);
                             active.fetch_sub(1, Ordering::Relaxed);
                         }));
                     }
@@ -319,10 +389,11 @@ impl Drop for Server {
     }
 }
 
-fn handle(stream: TcpStream, state: &Shared, stop: &AtomicBool) {
+fn handle(stream: TcpStream, state: &Shared, stop: &AtomicBool, token: &Option<String>) {
     let mut id = None;
     let result = (|| -> io::Result<()> {
         stream.set_read_timeout(Some(Duration::from_millis(100)))?;
+        stream.set_write_timeout(Some(Duration::from_millis(200)))?;
         let mut reader = BufReader::new(stream);
         let mut pending = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -342,9 +413,25 @@ fn handle(stream: TcpStream, state: &Shared, stop: &AtomicBool) {
                         version: 1,
                         source,
                         language,
+                        token: supplied,
                     },
                 ) => {
+                    if !authenticated(token, &supplied) {
+                        return Err(invalid("authentication failed"));
+                    }
                     id = Some(state.lock().unwrap().register(source, language)?);
+                }
+                (
+                    None,
+                    Wire::Subscribe {
+                        version: 1,
+                        token: supplied,
+                    },
+                ) => {
+                    if !authenticated(token, &supplied) {
+                        return Err(invalid("authentication failed"));
+                    }
+                    return subscribe(reader.get_mut(), state, stop);
                 }
                 (Some(id), Wire::Log { mut record }) => {
                     record.validate()?;
@@ -374,6 +461,200 @@ fn handle(stream: TcpStream, state: &Shared, stop: &AtomicBool) {
         && error.kind() != io::ErrorKind::UnexpectedEof
     {
         state.reject(error);
+    }
+}
+
+fn write_response(stream: &mut TcpStream, response: &Response) -> io::Result<()> {
+    let mut bytes = serde_json::to_vec(response)?;
+    if bytes.len() + 1 > MAX_RESPONSE {
+        return Err(invalid("response exceeds size limit"));
+    }
+    bytes.push(b'\n');
+    let deadline = Instant::now() + Duration::from_millis(200);
+    let mut pending = bytes.as_slice();
+    while !pending.is_empty() {
+        if Instant::now() > deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "viewer write timeout",
+            ));
+        }
+        let written = stream.write(pending)?;
+        if written == 0 {
+            return Err(io::Error::new(io::ErrorKind::WriteZero, "viewer closed"));
+        }
+        pending = &pending[written..];
+    }
+    Ok(())
+}
+
+fn subscribe(stream: &mut TcpStream, state: &Shared, stop: &AtomicBool) -> io::Result<()> {
+    write_response(stream, &Response::Ready { version: 1 })?;
+    let mut sequence = 0;
+    while !stop.load(Ordering::Relaxed) {
+        let (status, events) = {
+            let state = state.lock().unwrap();
+            (
+                Response::Status {
+                    sources: state.sources.clone(),
+                    evicted: state.evicted,
+                    rejected: state.rejected,
+                    adapter_dropped: state.adapter_dropped,
+                    last_error: state.last_error.clone(),
+                },
+                state
+                    .events
+                    .iter()
+                    .filter(|event| event.sequence > sequence)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+        };
+        write_response(stream, &status)?;
+        for event in events {
+            if stop.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            sequence = event.sequence;
+            write_response(stream, &Response::Event { event })?;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+pub struct Remote {
+    pub state: Shared,
+    pub finished: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl Remote {
+    pub fn connect(address: &str, token: Option<String>) -> io::Result<Self> {
+        let addresses: Vec<_> = address.to_socket_addrs()?.collect();
+        if addresses.iter().any(|address| !address.ip().is_loopback()) && token.is_none() {
+            return Err(invalid(
+                "remote connection requires a token in RUAL_TOKEN or --token-env",
+            ));
+        }
+        let mut stream = addresses
+            .iter()
+            .find_map(|address| TcpStream::connect_timeout(address, Duration::from_secs(2)).ok())
+            .ok_or_else(|| io::Error::other("cannot connect to receiver"))?;
+        stream.set_write_timeout(Some(Duration::from_millis(200)))?;
+        stream.set_read_timeout(Some(Duration::from_millis(100)))?;
+        writeln!(
+            stream,
+            "{}",
+            serde_json::json!({"type":"subscribe", "version":1, "token":token})
+        )?;
+        let mut reader = BufReader::new(stream);
+        let mut pending = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if Instant::now() > deadline {
+                return Err(invalid("subscription timeout"));
+            }
+            match frame_limit(&mut reader, &mut pending, MAX_RESPONSE) {
+                Ok(Some(bytes)) => {
+                    if !matches!(
+                        serde_json::from_slice::<Response>(&bytes),
+                        Ok(Response::Ready { version: 1 })
+                    ) {
+                        return Err(invalid("invalid receiver response"));
+                    }
+                    break;
+                }
+                Ok(None) => continue,
+                Err(_) => {
+                    return Err(invalid(
+                        "subscription refused; check the token and receiver version",
+                    ));
+                }
+            }
+        }
+        let state = Shared::default();
+        let shared = state.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let shutdown = stop.clone();
+        let finished = Arc::new(AtomicBool::new(false));
+        let done = finished.clone();
+        let worker = thread::spawn(move || {
+            let result = (|| -> io::Result<()> {
+                while !shutdown.load(Ordering::Relaxed) {
+                    let Some(bytes) = frame_limit(&mut reader, &mut pending, MAX_RESPONSE)? else {
+                        continue;
+                    };
+                    let response: Response = serde_json::from_slice(&bytes)
+                        .map_err(|_| invalid("invalid receiver response"))?;
+                    let mut state = shared.lock().unwrap();
+                    match response {
+                        Response::Status {
+                            sources,
+                            evicted,
+                            rejected,
+                            adapter_dropped,
+                            last_error,
+                        } => {
+                            if sources.len() > MAX_SOURCES || last_error.len() > MAX_FRAME {
+                                return Err(invalid("receiver status exceeds limits"));
+                            }
+                            state.sources = sources;
+                            state.evicted = state.evicted.max(evicted);
+                            state.rejected = rejected;
+                            state.adapter_dropped = adapter_dropped;
+                            state.last_error = last_error;
+                        }
+                        Response::Event { mut event } => {
+                            event.record.validate()?;
+                            if event.source.len() > 128
+                                || event.language.len() > 32
+                                || event.sequence <= state.next_event
+                            {
+                                return Err(invalid("invalid receiver event"));
+                            }
+                            state.next_event = event.sequence;
+                            event.bytes = serde_json::to_vec(&event.record)?.len();
+                            state.bytes += event.bytes;
+                            state.events.push_back(event);
+                            while state.events.len() > MAX_RECORDS || state.bytes > MAX_BYTES {
+                                state.bytes -= state.events.pop_front().unwrap().bytes;
+                                state.evicted += 1;
+                            }
+                        }
+                        Response::Ready { .. } => {
+                            return Err(invalid("unexpected receiver greeting"));
+                        }
+                    }
+                }
+                Ok(())
+            })();
+            let mut state = shared.lock().unwrap();
+            for source in &mut state.sources {
+                source.connected = false;
+            }
+            if let Err(error) = result {
+                state.last_error =
+                    format!("receiver disconnected: {error}; run connect again to reconnect");
+            }
+            done.store(true, Ordering::Relaxed);
+        });
+        Ok(Self {
+            state,
+            finished,
+            stop,
+            worker: Some(worker),
+        })
+    }
+}
+
+impl Drop for Remote {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -413,7 +694,7 @@ mod tests {
 
     #[test]
     fn disconnect_and_shutdown_release_idle_clients() {
-        let server = Server::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let server = Server::bind("127.0.0.1:0".parse().unwrap(), None).unwrap();
         let mut stream = TcpStream::connect(server.address).unwrap();
         stream
             .write_all(
@@ -435,5 +716,24 @@ mod tests {
         let start = Instant::now();
         drop(server);
         assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn fragmented_registration_cannot_hold_shutdown_open() {
+        let server = Server::bind("127.0.0.1:0".parse().unwrap(), None).unwrap();
+        let mut stream = TcpStream::connect(server.address).unwrap();
+        let worker = thread::spawn(move || {
+            for _ in 0..200 {
+                if stream.write_all(b" ").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        });
+        thread::sleep(Duration::from_millis(100));
+        let start = Instant::now();
+        drop(server);
+        assert!(start.elapsed() < Duration::from_secs(1));
+        worker.join().unwrap();
     }
 }

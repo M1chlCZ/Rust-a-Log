@@ -39,7 +39,7 @@ if (args.Contains("--check")) {
     return;
 }
 
-using var sink = new RualProvider("dotnet-example", port: int.Parse(Environment.GetEnvironmentVariable("RUAL_PORT") ?? "7331"));
+using var sink = new RualProvider("dotnet-example", host: Environment.GetEnvironmentVariable("RUAL_HOST") ?? "127.0.0.1", port: int.Parse(Environment.GetEnvironmentVariable("RUAL_PORT") ?? "7331"));
 var log = sink.CreateLogger("Example");
 log.LogInformation("Application started on {Port}", 8080);
 log.LogError("Request failed: {RequestId}", "demo-42");

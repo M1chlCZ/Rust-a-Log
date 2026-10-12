@@ -4,8 +4,10 @@ const MAX_FRAME = 64 * 1024;
 const LEVELS = new Set(['TRACE', 'DEBUG', 'INFO', 'WARN', 'WARNING', 'ERROR', 'FATAL', 'CRITICAL', 'SUCCESS']);
 
 /** Forward logs without making the application wait for a socket write. */
-export function createLogger({ host = '127.0.0.1', port = 7331, source = 'node-app' } = {}) {
-  if (!['127.0.0.1', '::1'].includes(host)) throw new Error('rual host must be a loopback IP');
+export function createLogger({ host = '127.0.0.1', port = 7331, source = 'node-app', token = process.env.RUAL_TOKEN } = {}) {
+  if (typeof host !== 'string' || !host) throw new Error('invalid host');
+  if (!['localhost', '127.0.0.1', '::1'].includes(host) && !token) throw new Error('remote receiver requires a token');
+  if (token !== undefined && (typeof token !== 'string' || Buffer.byteLength(token) > 256)) throw new Error('invalid token');
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('invalid port');
   if (!source || Buffer.byteLength(source) > 128) throw new Error('invalid source name');
   const queue = [];
@@ -45,7 +47,7 @@ export function createLogger({ host = '127.0.0.1', port = 7331, source = 'node-a
       connected = true;
       blocked = false;
       socket.setTimeout(0);
-      socket.write(JSON.stringify({ type: 'register', version: 1, source, language: 'node' }) + '\n');
+      socket.write(JSON.stringify({ type: 'register', version: 1, source, language: 'node', token }) + '\n');
       pump();
     });
     socket.on('drain', () => { blocked = false; pump(); });

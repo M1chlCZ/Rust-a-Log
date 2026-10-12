@@ -1,6 +1,6 @@
 # Rust-a-Log
 
-A local log viewer for files and live applications. Read recent records from large files, capture a command, or browse Go, Node.js, .NET, and Java logs in one terminal.
+A log viewer for files and live applications on your machine or LAN. Read recent file records or browse Go, Node.js, .NET, Java, Python, and Ruby logs.
 
 File tails use backward scans in 64 KiB blocks. The TUI shows named sources, connection status, structured fields, and recent records.
 
@@ -8,10 +8,10 @@ File tails use backward scans in 64 KiB blocks. The TUI shows named sources, con
 
 ## Quick start
 
-Install the current source with [Rust](https://rustup.rs/):
+Install with [Rust](https://rustup.rs/):
 
 ```sh
-cargo install --git https://github.com/M1chlCZ/Rust-a-Log --locked
+cargo install rust-a-log --version 0.1.1 --locked
 rual app.log -e -w -n 20
 # Or start the live receiver and terminal interface:
 rual tui
@@ -21,8 +21,11 @@ This shows the last 20 errors or warnings and follows new records. Press Ctrl+C 
 For a one-time text search, run `rual app.log -g timeout --ignore-case --once`.
 See [Live sources and TUI](#live-sources-and-tui) for application streams and [Language adapters](adapters/README.md) for integrations.
 
-The GitHub source is version **0.1.0**. The published crates.io version **0.0.1** provides the older file viewer and logger.
-Install from GitHub to use the live receiver and TUI. Adapter source packages are in this repository.
+Version **0.1.1** adds LAN connections and Python and Ruby adapters.
+Version **0.1.0** adds the local receiver, TUI, and first four adapters. Adapter source packages are in this repository.
+Download native archives and `SHA256SUMS` from [GitHub releases](https://github.com/M1chlCZ/Rust-a-Log/releases).
+Linux archives use musl for static linking. Windows archives contain `rual.exe`.
+macOS archives support Intel and Apple Silicon. Binaries are unsigned and are not notarized.
 
 ## Build and install
 
@@ -34,10 +37,10 @@ cargo build --locked --release
 cargo install --locked --path .
 ```
 
-The published 0.0.1 CLI can be installed directly from crates.io:
+To install the current source from GitHub:
 
 ```sh
-cargo install rust-a-log --locked
+cargo install --git https://github.com/M1chlCZ/Rust-a-Log --locked
 ```
 
 The project pins **Rust 1.98.1**, uses edition 2024, and includes `Cargo.lock` for reproducible dependency resolution. Rustup installs the pinned compiler when you first build. The local binary is `target/release/rual` (`rual.exe` on Windows).
@@ -151,6 +154,55 @@ Only registered applications and explicitly named files appear as sources.
 A pause keeps a bounded snapshot while the receiver continues to accept new records.
 The TUI needs an interactive terminal. `listen` supports pipes.
 
+## Connect services across a LAN
+
+You can collect remote application logs on your workstation, or view a receiver on another machine.
+Use version 0.1.1 or later at both ends. The receiver needs a token for every non-loopback bind.
+
+On the machine that collects logs, set a random token and bind its LAN IP:
+
+```sh
+export RUAL_TOKEN="$(openssl rand -hex 32)"
+rual listen --bind 192.168.1.20:7331
+# Or show the collector's own TUI:
+rual tui --bind 192.168.1.20:7331 --file /path/to/service.log
+```
+
+Use the same token in each application and remote viewer. Store the token in the service's environment configuration.
+Set the adapter host to `192.168.1.20` and its port to `7331`.
+All adapters read `RUAL_TOKEN` by default. See [adapter examples](adapters/README.md#lan-connections).
+The application machine can send logs while the receiver shows them on your workstation.
+
+To view a receiver on another machine, run:
+
+```sh
+export RUAL_TOKEN='the-same-token-as-the-receiver'
+rual connect 192.168.1.20:7331 --tui
+rual connect 192.168.1.20:7331 --json
+```
+
+The remote view includes recent history, live records, source status, fields, and discarded counts.
+Several viewers can connect to the same receiver. A viewer does not become a log source.
+Plain remote output exits with an error on disconnect. The TUI shows the disconnect and retains recent records.
+Run `connect` again to reconnect. A receiver restart clears its history.
+
+`--token-env NAME` reads a different environment variable. Token values never appear in CLI arguments or receiver diagnostics.
+If `RUAL_TOKEN` is set, local clients also need it. Without a token, loopback mode keeps the version 0.1.0 behavior.
+Allow the receiver port through your host firewall only for the intended LAN machines.
+Bind a specific LAN IP to avoid unrelated interfaces. The receiver does not change firewall rules or start other services.
+
+TCP sends the token and log data without encryption. Use direct TCP only on a trusted LAN.
+For an encrypted connection, keep the receiver on loopback and create an SSH tunnel:
+
+```sh
+ssh -N -L 7332:127.0.0.1:7331 user@service-host
+# In another terminal, with the receiver token set if it uses one:
+rual connect 127.0.0.1:7332 --tui
+```
+
+An existing service needs an adapter, a followed file, or command capture to expose its logs.
+The CLI does not discover arbitrary processes or open sockets automatically.
+
 ## Capture a command or stdin
 
 Capture stdout and stderr without an adapter:
@@ -179,7 +231,7 @@ Stdin and process records have a 64 KiB line limit. The regular file viewer cont
 
 ## Language adapters
 
-The repository includes Go slog, Node.js/TypeScript and Pino, .NET ILoggerProvider, Java JDK logging, and Logback adapters.
+The repository includes Go slog, Node.js/TypeScript and Pino, .NET ILoggerProvider, Java JDK logging, Logback, Python logging, and Ruby Logger adapters.
 See [adapter installation and examples](adapters/README.md).
 All adapters use the same [version 1 protocol](docs/protocol.md).
 
@@ -192,8 +244,9 @@ The receiver keeps 2,000 records or 8 MiB of serialized record data. It accepts 
 Expired history and rejected clients appear in the TUI. The plain stream reports skipped history on stderr.
 Adapter drop counts reach the receiver after a later successful send. Local counters remain available while the receiver is absent.
 
-The receiver accepts only loopback bind addresses. It does not authenticate other local users.
-Use it on a trusted development machine. Containers need a route to the host listener, or process capture through `docker logs`.
+LAN receivers authenticate publishers and viewers with the same token. This token grants access to every retained source.
+Local mode without a token does not authenticate other local users.
+Containers need a route to the receiver, or process capture through `docker logs`.
 
 ## Performance
 
@@ -220,7 +273,7 @@ The logger is published on crates.io as `rust-a-log` (the Rust import name is
 
 ```toml
 [dependencies]
-rust-a-log = "0.0.1"
+rust-a-log = { version = "0.1.1", default-features = false }
 ```
 
 Then import and use it:
@@ -263,7 +316,7 @@ dotnet run --project adapters/dotnet/Example -- --check
 python3 scripts/check-adapters.py
 ```
 
-The last command runs all four language examples against the real receiver.
+The last command runs all six language examples against the real receiver with token authentication.
 It needs the Go, Node.js, .NET 10, Java 17+, and Maven tools. Run `cargo build --locked` first.
 
 `src/tail.rs` owns file reading. `src/live.rs` owns the protocol and bounded receiver.

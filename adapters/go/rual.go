@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,13 +18,13 @@ import (
 const maxFrame = 64 * 1024
 
 type sender struct {
-	address, source string
-	queue           chan []byte
-	done            chan struct{}
-	mu              sync.Mutex
-	closed          bool
-	dropped         atomic.Uint64
-	deadline        time.Time
+	address, source, token string
+	queue                  chan []byte
+	done                   chan struct{}
+	mu                     sync.Mutex
+	closed                 bool
+	dropped                atomic.Uint64
+	deadline               time.Time
 }
 
 // Handler keeps slog attributes and groups through the standard JSON handler.
@@ -34,15 +35,26 @@ type Handler struct {
 }
 
 // New starts a background sender. It does not wait for the receiver.
-func New(address, source string) (*Handler, error) {
+func New(address, source string, tokens ...string) (*Handler, error) {
 	host, _, err := net.SplitHostPort(address)
-	if err != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
-		return nil, errors.New("rual address must use a loopback IP and port")
+	if err != nil || host == "" || len(tokens) > 1 {
+		return nil, errors.New("use a host and port, and at most one token")
+	}
+	token := os.Getenv("RUAL_TOKEN")
+	if len(tokens) == 1 {
+		token = tokens[0]
+	}
+	ip := net.ParseIP(host)
+	if host != "localhost" && (ip == nil || !ip.IsLoopback()) && token == "" {
+		return nil, errors.New("remote receiver requires a token")
+	}
+	if len(token) > 256 {
+		return nil, errors.New("token exceeds 256 bytes")
 	}
 	if len(source) == 0 || len(source) > 128 {
 		return nil, errors.New("source must contain 1 to 128 bytes")
 	}
-	sender := &sender{address: address, source: source, queue: make(chan []byte, 64), done: make(chan struct{})}
+	sender := &sender{address: address, source: source, token: token, queue: make(chan []byte, 64), done: make(chan struct{})}
 	handler := &Handler{Handler: slog.NewJSONHandler(sender, &slog.HandlerOptions{Level: slog.LevelDebug}), sender: sender}
 	go sender.run()
 	return handler, nil
@@ -136,7 +148,7 @@ func (s *sender) run() {
 				s.dropped.Add(1)
 				continue
 			}
-			registration, _ := json.Marshal(map[string]any{"type": "register", "version": 1, "source": s.source, "language": "go"})
+			registration, _ := json.Marshal(map[string]any{"type": "register", "version": 1, "source": s.source, "language": "go", "token": s.token})
 			conn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
 			if _, err = conn.Write(append(registration, '\n')); err != nil {
 				conn.Close()

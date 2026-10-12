@@ -25,8 +25,13 @@ fn lines(reader: impl std::io::Read + Send + 'static) -> Receiver<String> {
 
 impl Listener {
     fn new() -> Self {
+        Self::with_options(&[])
+    }
+
+    fn with_options(options: &[&str]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_rual"))
             .args(["listen", "--bind", "127.0.0.1:0", "--json"])
+            .args(options)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -59,6 +64,32 @@ impl Listener {
         .unwrap();
         stream
     }
+}
+
+#[test]
+fn remote_view_preserves_live_file_lines_that_expand_in_json() {
+    let path = std::env::temp_dir().join(format!("rual-expanded-{}.log", std::process::id()));
+    let message = format!("prefix{}suffix", "\t".repeat(40_000));
+    std::fs::write(&path, format!("{message}\n")).unwrap();
+    let listener = Listener::with_options(&["--file", path.to_str().unwrap()]);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rual"))
+        .args(["connect", &listener.address, "--json"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let output = lines(child.stdout.take().unwrap());
+    let viewer = Listener {
+        child,
+        lines: output,
+        errors: mpsc::channel().1,
+        address: String::new(),
+    };
+    let record: serde_json::Value =
+        serde_json::from_str(&viewer.lines.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
+    assert_eq!(record["message"], message);
+    drop(viewer);
+    drop(listener);
+    std::fs::remove_file(path).unwrap();
 }
 
 impl Drop for Listener {
@@ -154,7 +185,98 @@ fn listener_rejects_network_wide_bind_addresses() {
         .output()
         .unwrap();
     assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("loopback"));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("token"));
+}
+
+#[test]
+fn authenticated_remote_view_preserves_source_and_fields() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rual"))
+        .args([
+            "listen",
+            "--bind",
+            "127.0.0.1:0",
+            "--json",
+            "--token-env",
+            "RUAL_TEST_TOKEN",
+        ])
+        .env("RUAL_TEST_TOKEN", "test-secret")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let output = lines(child.stdout.take().unwrap());
+    let errors = lines(child.stderr.take().unwrap());
+    let address = errors
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .strip_prefix("rual listening on ")
+        .unwrap()
+        .to_string();
+    let listener = Listener {
+        child,
+        lines: output,
+        errors,
+        address,
+    };
+    let mut wrong = TcpStream::connect(&listener.address).unwrap();
+    wrong.write_all(b"{\"type\":\"register\",\"version\":1,\"source\":\"bad\",\"language\":\"test\",\"token\":\"wrong\"}\n").unwrap();
+    assert!(
+        listener
+            .errors
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .contains("authentication")
+    );
+    let bad_view = Command::new(env!("CARGO_BIN_EXE_rual"))
+        .args([
+            "connect",
+            &listener.address,
+            "--token-env",
+            "RUAL_TEST_TOKEN",
+        ])
+        .env("RUAL_TEST_TOKEN", "wrong")
+        .output()
+        .unwrap();
+    assert!(!bad_view.status.success());
+    assert!(!String::from_utf8_lossy(&bad_view.stderr).contains("test-secret"));
+    let mut viewer = Command::new(env!("CARGO_BIN_EXE_rual"))
+        .args([
+            "connect",
+            &listener.address,
+            "--json",
+            "--token-env",
+            "RUAL_TEST_TOKEN",
+        ])
+        .env("RUAL_TEST_TOKEN", "test-secret")
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let received = lines(viewer.stdout.take().unwrap());
+    let mut viewer = Listener {
+        child: viewer,
+        lines: received,
+        errors: mpsc::channel().1,
+        address: String::new(),
+    };
+    let mut publisher = TcpStream::connect(&listener.address).unwrap();
+    publisher.write_all(b"{\"type\":\"register\",\"version\":1,\"source\":\"remote-api\",\"language\":\"python\",\"token\":\"test-secret\"}\n{\"type\":\"log\",\"message\":\"LAN record\",\"fields\":{\"request\":42}}\n").unwrap();
+    let record: serde_json::Value =
+        serde_json::from_str(&viewer.lines.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap();
+    assert_eq!(record["source"], "remote-api");
+    assert_eq!(record["fields"]["request"], 42);
+    drop(listener);
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = viewer.child.try_wait().unwrap() {
+            assert!(!status.success());
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "remote view did not exit after disconnect"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]

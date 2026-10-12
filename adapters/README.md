@@ -10,10 +10,42 @@ The adapters add a best-effort output to the existing logger. Keep original outp
 | Node.js 20+ / TypeScript | Direct logger, Pino transport | `node adapters/node/example.mjs` |
 | .NET 8+ | ILoggerProvider | `dotnet run --project adapters/dotnet/Example` (example needs .NET 10 SDK) |
 | Java 17+ | JDK Handler, Logback Appender | `cd adapters/java && mvn compile exec:java -Dexec.mainClass=io.github.m1chlcz.rual.Example` |
+| Python 3.10+ | logging.Handler | `python3 adapters/python/example.py` |
+| Ruby 3.2+ | Logger output | `ruby adapters/ruby/example.rb` |
 
 For a different receiver, set `RUAL_ADDRESS=127.0.0.1:9000` for the Go example.
-Set `RUAL_PORT=9000` for the other examples.
+Set `RUAL_HOST` and `RUAL_PORT` for the other examples.
 These variables configure the examples. Application adapters accept an address or port through their constructors.
+
+## LAN connections
+
+On the receiver, set `RUAL_TOKEN` and run `rual tui --bind 192.168.1.20:7331`.
+On the service machine, set the same `RUAL_TOKEN` and the receiver host and port:
+
+```sh
+export RUAL_TOKEN='the-same-token-as-the-receiver'
+export RUAL_HOST=192.168.1.20
+export RUAL_PORT=7331
+export RUAL_ADDRESS=192.168.1.20:7331 # Go example
+python3 adapters/python/example.py
+```
+
+The six example commands use these variables. All adapters read `RUAL_TOKEN` unless you pass a token explicitly.
+Remote endpoints require a token. Direct TCP is plaintext; use a trusted LAN or an SSH tunnel.
+The .NET adapter accepts an IP address. Other adapters also accept hostnames.
+
+For constructor configuration:
+
+```text
+Go:     rual.New("192.168.1.20:7331", "api", token)
+Node:   createLogger({ host: "192.168.1.20", port: 7331, source: "api", token })
+.NET:   new RualProvider("api", host: "192.168.1.20", port: 7331, token: token)
+Java:   new RualClient("api", "192.168.1.20", 7331, token)
+Python: RualHandler("api", host="192.168.1.20", token=token)
+Ruby:   Rual::LogDevice.new("api", host: "192.168.1.20", token: token)
+```
+
+Java Handler and Logback configurations use `RUAL_TOKEN` from the service environment.
 
 ## Go
 
@@ -115,7 +147,7 @@ Then add it to the application:
 <dependency>
   <groupId>io.github.m1chlcz</groupId>
   <artifactId>rual-adapter</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>0.1.1-SNAPSHOT</version>
 </dependency>
 ```
 
@@ -149,6 +181,46 @@ For Logback, retain the existing dependency and appenders. Add this inside the e
 
 The Logback adapter retains MDC fields, logger name, thread, and exception stack traces.
 `dropped()` returns the discarded count. Shutdown waits for a limited queue drain.
+
+## Python
+
+Copy `adapters/python/rual.py` into your project, or add that directory to `PYTHONPATH`.
+The adapter uses the Python standard library.
+
+```python
+import logging
+from rual import RualHandler
+
+handler = RualHandler("api")
+logger = logging.getLogger("api")
+logger.addHandler(handler)
+logger.error("Request failed", extra={"fields": {"request_id": 42}})
+handler.close()  # At application shutdown
+logger.removeHandler(handler)
+```
+
+The handler retains the logger name, application timestamp, fields, and exception traceback.
+Use `logger.exception(...)` inside an exception handler to send its traceback.
+`handler.dropped` returns the discarded count. `close()` waits at most one second for the worker.
+
+## Ruby
+
+Copy `adapters/ruby/rual.rb` into your project. The adapter uses the Ruby standard library.
+
+```ruby
+require 'logger'
+require_relative 'rual'
+
+output = Rual::LogDevice.new('api')
+logger = Logger.new(output)
+logger.error('Request failed')
+output.log('ERROR', 'Request failed', { request_id: 42 })
+logger.close # At application shutdown
+```
+
+Standard Logger output retains its formatted message and severity.
+Use `output.log` for structured fields. `output.dropped` returns the discarded count.
+`close` waits at most one second for the worker.
 
 ## Delivery
 

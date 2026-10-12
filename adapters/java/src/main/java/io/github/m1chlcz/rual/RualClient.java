@@ -19,16 +19,23 @@ public final class RualClient implements AutoCloseable {
     private final AtomicLong dropped = new AtomicLong();
     private final InetSocketAddress address;
     private final String source;
+    private final String token;
     private final Thread worker;
     private volatile SocketChannel socket;
     private volatile boolean closed;
     private volatile long closeDeadline;
 
     public RualClient(String source, String host, int port) throws Exception {
+        this(source, host, port, System.getenv().getOrDefault("RUAL_TOKEN", ""));
+    }
+
+    public RualClient(String source, String host, int port, String token) throws Exception {
         var ip = InetAddress.getByName(host);
-        if (!ip.isLoopbackAddress() || port < 1 || port > 65535) throw new IllegalArgumentException("Use a loopback IP and port");
+        if (!ip.isLoopbackAddress() && token.isEmpty()) throw new IllegalArgumentException("Remote receiver requires a token");
+        if (port < 1 || port > 65535 || token.getBytes(StandardCharsets.UTF_8).length > 256) throw new IllegalArgumentException("Invalid port or token");
         if (source.isBlank() || source.getBytes(StandardCharsets.UTF_8).length > 128) throw new IllegalArgumentException("Invalid source");
         this.source = source;
+        this.token = token;
         address = new InetSocketAddress(ip, port);
         worker = new Thread(this::send, "rual-sender");
         worker.setDaemon(true);
@@ -58,7 +65,7 @@ public final class RualClient implements AutoCloseable {
             if (System.nanoTime() > deadline) throw new java.io.IOException("connect timeout");
             Thread.sleep(1);
         }
-        write(encode(Map.of("type", "register", "version", 1, "source", source, "language", "java")));
+        write(encode(Map.of("type", "register", "version", 1, "source", source, "language", "java", "token", token)));
     }
 
     private void write(byte[] bytes) throws Exception {

@@ -41,6 +41,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
       - run: cargo build --locked
       - run: go test -race ./...
         working-directory: adapters/go
@@ -52,4 +55,8 @@ jobs:
         working-directory: adapters/dotnet
       - run: mvn -B test
         working-directory: adapters/java
+      - run: python3 -m unittest
+        working-directory: adapters/python
+      - run: ruby test_adapter.rb
+        working-directory: adapters/ruby
       - run: python3 scripts/check-adapters.py

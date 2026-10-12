@@ -90,6 +90,19 @@ fn cli() -> Command {
             "Browse local application sources and recent logs",
         ))
         .subcommand(
+            Command::new("connect")
+                .about("View logs from a receiver on another machine")
+                .arg(Arg::new("address").required(true).value_name("HOST:PORT"))
+                .arg(token_arg())
+                .arg(Arg::new("json").long("json").action(ArgAction::SetTrue))
+                .arg(
+                    Arg::new("tui")
+                        .long("tui")
+                        .action(ArgAction::SetTrue)
+                        .conflicts_with("json"),
+                ),
+        )
+        .subcommand(
             Command::new("run")
                 .about("Capture stdout and stderr from a command")
                 .arg(Arg::new("name").long("name").default_value("process"))
@@ -132,8 +145,9 @@ fn live_command(name: &'static str, help: &'static str) -> Command {
                 .long("bind")
                 .default_value(live::DEFAULT_BIND)
                 .value_parser(value_parser!(std::net::SocketAddr))
-                .help("Loopback address to receive logs"),
+                .help("Address to receive logs; LAN binds require a token"),
         )
+        .arg(token_arg())
         .arg(
             Arg::new("json")
                 .long("json")
@@ -147,6 +161,14 @@ fn live_command(name: &'static str, help: &'static str) -> Command {
                 .value_parser(value_parser!(PathBuf))
                 .help("Also follow this log file"),
         )
+}
+
+fn token_arg() -> Arg {
+    Arg::new("token-env")
+        .long("token-env")
+        .default_value("RUAL_TOKEN")
+        .value_name("NAME")
+        .help("Environment variable that contains the receiver token")
 }
 
 struct Filter {
@@ -229,12 +251,41 @@ fn run() -> io::Result<u8> {
         if command == "run" {
             return capture::run_command(options);
         }
+        let token = live::token_from_env(options.get_one::<String>("token-env").unwrap())?;
+        if command == "connect" {
+            let address = options.get_one::<String>("address").unwrap();
+            if options.get_flag("tui")
+                && (!io::stdin().is_terminal() || !io::stdout().is_terminal())
+            {
+                return Err(io::Error::other("TUI requires an interactive terminal"));
+            }
+            let remote = live::Remote::connect(address, token)?;
+            if options.get_flag("tui") {
+                tui::run(&remote.state, address)?;
+            } else {
+                let interrupted = capture::cancellation()?;
+                capture::print_live(&remote.state, options.get_flag("json"), || {
+                    interrupted.load(std::sync::atomic::Ordering::Relaxed)
+                        || remote.finished.load(std::sync::atomic::Ordering::Relaxed)
+                })?;
+                if interrupted.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Ok(130);
+                }
+                return Err(io::Error::other(
+                    remote.state.lock().unwrap().last_error.clone(),
+                ));
+            }
+            return Ok(0);
+        }
         if command == "tui" && (!io::stdin().is_terminal() || !io::stdout().is_terminal()) {
             return Err(io::Error::other(
                 "TUI requires an interactive terminal; use rual listen for pipes",
             ));
         }
-        let server = live::Server::bind(*options.get_one::<std::net::SocketAddr>("bind").unwrap())?;
+        let server = live::Server::bind(
+            *options.get_one::<std::net::SocketAddr>("bind").unwrap(),
+            token,
+        )?;
         eprintln!("rual listening on {}", server.address);
         if let Some(files) = options.get_many::<PathBuf>("file") {
             for path in files {

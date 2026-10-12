@@ -1,5 +1,6 @@
 export interface LoggerOptions {
-  host?: '127.0.0.1' | '::1';
+  host?: string;
+  token?: string;
   port?: number;
   source?: string;
 }

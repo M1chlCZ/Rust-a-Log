@@ -1,9 +1,9 @@
 [package]
 name = "rust-a-log"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.98.1"
-description = "A small, fast, color-coded log viewer"
+description = "A fast file log viewer and TUI for local and LAN application streams"
 license = "MIT"
 repository = "https://github.com/M1chlCZ/Rust-a-Log"
 homepage = "https://github.com/M1chlCZ/Rust-a-Log"

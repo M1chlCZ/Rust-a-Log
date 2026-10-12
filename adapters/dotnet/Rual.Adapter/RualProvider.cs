@@ -16,15 +16,18 @@ public sealed class RualProvider : ILoggerProvider, ISupportExternalScope {
     private readonly IPAddress address;
     private readonly int port;
     private readonly string source;
+    private readonly string? token;
     private long dropped;
     private int disposed;
     private IExternalScopeProvider scopes = new LoggerExternalScopeProvider();
 
     public long Dropped => Interlocked.Read(ref dropped);
 
-    public RualProvider(string source, string host = "127.0.0.1", int port = 7331) {
+    public RualProvider(string source, string host = "127.0.0.1", int port = 7331, string? token = null) {
         address = IPAddress.Parse(host);
-        if (!IPAddress.IsLoopback(address) || port is < 1 or > 65535) throw new ArgumentException("Use a loopback IP and port");
+        this.token = token ?? Environment.GetEnvironmentVariable("RUAL_TOKEN");
+        if (!IPAddress.IsLoopback(address) && string.IsNullOrEmpty(this.token)) throw new ArgumentException("Remote receiver requires a token");
+        if (port is < 1 or > 65535 || System.Text.Encoding.UTF8.GetByteCount(this.token ?? "") > 256) throw new ArgumentException("Invalid port or token");
         if (string.IsNullOrWhiteSpace(source) || System.Text.Encoding.UTF8.GetByteCount(source) > 128) throw new ArgumentException("Invalid source");
         this.source = source;
         this.port = port;
@@ -65,7 +68,7 @@ public sealed class RualProvider : ILoggerProvider, ISupportExternalScope {
                         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
                         deadline.CancelAfter(100);
                         await client.ConnectAsync(address, port, deadline.Token);
-                        await Write(client, new { type = "register", version = 1, source, language = "dotnet" });
+                        await Write(client, new { type = "register", version = 1, source, language = "dotnet", token });
                     }
                     var lost = Dropped;
                     if (lost > reported) await Write(client, new { type = "dropped", count = lost - reported });
