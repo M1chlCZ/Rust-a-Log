@@ -1,5 +1,7 @@
 use crate::live::{self, Event, Shared, Source};
-use crossterm::event::{self, Event as TerminalEvent, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, Event as TerminalEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
@@ -16,6 +18,7 @@ struct View {
     level: usize,
     details: bool,
     detail_scroll: u16,
+    horizontal: usize,
 }
 
 const LEVELS: [&str; 7] = [
@@ -23,6 +26,19 @@ const LEVELS: [&str; 7] = [
 ];
 
 impl View {
+    fn pan(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.horizontal = self.horizontal.saturating_sub(20);
+            }
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.horizontal = self.horizontal.saturating_add(20);
+            }
+            KeyCode::Home => self.horizontal = 0,
+            _ => return false,
+        }
+        true
+    }
     fn clamp_selection(&mut self, events: &[Event], sources: &[Source]) {
         self.selected = self
             .selected
@@ -62,6 +78,33 @@ fn color(level: &str) -> Color {
         "SUCCESS" => Color::Green,
         _ => Color::White,
     }
+}
+
+fn log_row(event: &Event, show_source: bool) -> String {
+    let timestamp = chrono::DateTime::parse_from_rfc3339(&event.record.timestamp)
+        .map(|time| time.format("%H:%M:%S").to_string())
+        .unwrap_or_else(|_| event.record.timestamp.clone());
+    let mut row = format!("{} [{}] ", timestamp, event.record.level);
+    if show_source {
+        row.push_str(&format!("{}: ", event.source));
+    }
+    row.push_str(&event.record.message);
+    if let Some(fields) = event.record.fields.as_object() {
+        let priority = ["method", "route", "path", "status", "duration_ms", "error"];
+        for key in priority.iter().copied().chain(
+            fields
+                .keys()
+                .map(String::as_str)
+                .filter(|key| !priority.contains(key)),
+        ) {
+            if let Some(value) = fields.get(key) {
+                row.push_str(&format!(" {key}={value}"));
+            }
+        }
+    }
+    live::safe_text(&row)
+        .replace('\n', "\\n")
+        .replace('\t', "\\t")
 }
 
 fn draw(
@@ -111,21 +154,12 @@ fn draw(
     let logs: Vec<_> = visible
         .iter()
         .map(|event| {
-            let message = live::safe_text(&event.record.message)
-                .lines()
-                .next()
-                .unwrap_or("")
+            let row = log_row(event, view.source == 0 && sources.len() > 1)
                 .chars()
-                .take(300)
+                .skip(view.horizontal)
+                .take(usize::from(record_areas[0].width.saturating_sub(2)))
                 .collect::<String>();
-            ListItem::new(format!(
-                "{} [{}] {}: {}",
-                live::safe_text(&event.record.timestamp),
-                event.record.level,
-                live::safe_text(&event.source),
-                message
-            ))
-            .style(Style::default().fg(color(&event.record.level)))
+            ListItem::new(row).style(Style::default().fg(color(&event.record.level)))
         })
         .collect();
     let mut log_state = ListState::default()
@@ -146,7 +180,10 @@ fn draw(
             .get(view.selected.min(visible.len().saturating_sub(1)))
             .map(|event| {
                 format!(
-                    "{}\n\n{}",
+                    "{} [{}] {}\n\n{}\n\n{}",
+                    live::safe_text(&event.record.timestamp),
+                    event.record.level,
+                    live::safe_text(&event.source),
                     live::safe_text(&event.record.message),
                     serde_json::to_string_pretty(&event.record.fields).unwrap_or_default()
                 )
@@ -161,10 +198,11 @@ fn draw(
         );
     }
     let help = format!(
-        "←/→ source  ↑/↓ record  Space pause  Enter details\nPgUp/PgDn scroll  l level  / search  q quit\n{}{} | level: {}",
+        "←/→ source  ↑/↓ record  Space pause  Enter details\nShift+←/→ pan  Home reset  PgUp/Dn details  l level  / find  q quit\n{}{} | level: {} | pan: {}",
         if view.editing { "Search: " } else { "Filter: " },
         live::safe_text(&view.search),
-        LEVELS[view.level]
+        LEVELS[view.level],
+        view.horizontal
     );
     frame.render_widget(Paragraph::new(help), areas[2]);
 }
@@ -216,6 +254,9 @@ pub fn run(state: &Shared, address: &str) -> io::Result<()> {
                 view.selected = view.visible(&events, &sources).len().saturating_sub(1);
                 continue;
             }
+            if view.pan(key) {
+                continue;
+            }
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => break,
                 KeyCode::Char('/') => view.editing = true,
@@ -256,30 +297,54 @@ mod tests {
 
     fn request_fixture(message: &str) -> (Vec<Event>, Vec<Source>) {
         let mut state = live::State::default();
-        let id = state.register("doglio-backend-lan".into(), "go".into()).unwrap();
-        state.push(id, live::Record {
-            timestamp: "2026-10-12T16:09:46.193369077Z".into(),
-            level: "INFO".into(),
-            message: message.into(),
-            fields: serde_json::json!({
-                "request_id": "test-42", "method": "GET", "route": "/admin/orders",
-                "status": 200, "duration_ms": 12, "context": {"attempt": 1}
-            }),
-        });
-        (state.events.into_iter().collect(), state.sources.into_iter().collect())
+        let id = state
+            .register("doglio-backend-lan".into(), "go".into())
+            .unwrap();
+        state.push(
+            id,
+            live::Record {
+                timestamp: "2026-10-12T16:09:46.193369077Z".into(),
+                level: "INFO".into(),
+                message: message.into(),
+                fields: serde_json::json!({
+                    "request_id": "test-42", "method": "GET", "route": "/admin/orders",
+                    "status": 200, "duration_ms": 12, "context": {"attempt": 1}
+                }),
+            },
+        );
+        (
+            state.events.into_iter().collect(),
+            state.sources.into_iter().collect(),
+        )
     }
 
     fn render(view: &View, events: &[Event], sources: &[Source], width: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, 18)).unwrap();
-        terminal.draw(|frame| draw(frame, view, events, sources, "rual")).unwrap();
-        terminal.backend().buffer().content.iter().map(|cell| cell.symbol()).collect()
+        terminal
+            .draw(|frame| draw(frame, view, events, sources, "rual"))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
     }
 
     #[test]
     fn request_fields_are_visible_without_opening_details_or_repeating_source() {
         let (events, sources) = request_fixture("http_request");
         for source in [0, 1] {
-            let screen = render(&View { source, ..View::default() }, &events, &sources, 300);
+            let screen = render(
+                &View {
+                    source,
+                    ..View::default()
+                },
+                &events,
+                &sources,
+                300,
+            );
             assert!(screen.contains("16:09:46 [INFO] http_request method=\"GET\" route=\"/admin/orders\" status=200 duration_ms=12"), "{screen}");
             assert!(screen.contains("request_id=\"test-42\""));
             assert!(screen.contains("context={\"attempt\":1}"));
@@ -300,10 +365,68 @@ mod tests {
     #[test]
     fn detail_preserves_the_full_timestamp_and_source_context() {
         let (events, sources) = request_fixture("http_request");
-        let screen = render(&View { details: true, ..View::default() }, &events, &sources, 180);
+        let screen = render(
+            &View {
+                details: true,
+                ..View::default()
+            },
+            &events,
+            &sources,
+            180,
+        );
         let details = screen.split("Record details").nth(1).unwrap();
         assert!(details.contains("2026-10-12T16:09:46.193369077Z"));
         assert!(details.contains("doglio-backend-lan"));
+    }
+
+    #[test]
+    fn horizontal_pan_reveals_the_tail_and_does_not_change_source() {
+        let (events, sources) = request_fixture(&format!("{} tail-visible", "a".repeat(500)));
+        let mut view = View {
+            source: 1,
+            ..View::default()
+        };
+        let initial = render(&view, &events, &sources, 100);
+        assert!(!initial.contains("tail-visible"));
+        for _ in 0..25 {
+            assert!(view.pan(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)));
+        }
+        assert_eq!(view.source, 1);
+        assert!(render(&view, &events, &sources, 100).contains("tail-visible"));
+        assert!(view.pan(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)));
+        assert_eq!(render(&view, &events, &sources, 100), initial);
+        assert!(!view.pan(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)));
+        assert!(view.pan(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT)));
+        assert_eq!(view.horizontal, 0);
+    }
+
+    #[test]
+    fn source_names_only_repeat_when_all_sources_need_disambiguation() {
+        let (events, mut sources) = request_fixture("http_request");
+        let mut second = sources[0].clone();
+        second.id = 2;
+        second.name = "worker".into();
+        sources.push(second);
+        assert_eq!(
+            render(&View::default(), &events, &sources, 300)
+                .matches("doglio-backend-lan")
+                .count(),
+            2
+        );
+        assert_eq!(
+            render(
+                &View {
+                    source: 1,
+                    ..View::default()
+                },
+                &events,
+                &sources,
+                300
+            )
+            .matches("doglio-backend-lan")
+            .count(),
+            1
+        );
     }
 
     #[test]

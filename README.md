@@ -142,6 +142,8 @@ Only registered applications and explicitly named files appear as sources.
 | --- | --- |
 | Left / Right | Select a source or all sources |
 | Up / Down | Select a record and pause the view |
+| Shift + Left / Right | Pan long log rows sideways |
+| Home | Reset horizontal pan |
 | Space | Pause or resume the view |
 | `/` | Edit the text filter (message and fields, case insensitive) |
 | Enter / Esc in the filter | Finish the edit |
@@ -153,6 +155,22 @@ Only registered applications and explicitly named files appear as sources.
 
 A pause keeps a bounded snapshot while the receiver continues to accept new records.
 The TUI needs an interactive terminal. `listen` supports pipes.
+
+The current source TUI shows the message and all structured fields on one line:
+
+```text
+16:09:46 [INFO] http_request method="GET" route="/orders" status=200 duration_ms=12 request_id="test-42"
+```
+
+Request method, route/path, status, duration, and error fields come first; other
+fields follow as compact key/value pairs. The source name is omitted when one
+source is selected or only one exists. “All sources” still labels rows when several
+sources are present. Long rows are not cut off at 300 characters: use Shift + arrows
+to see the rest. Newlines and tabs are escaped in the row instead of hiding later
+message text. Enter retains the full message, original timestamp/timezone, source,
+and formatted fields. Row times use the record's timezone; JSON and plain stream
+output are unchanged. These display updates are in the GitHub source build, not
+the already published 0.1.1 archives.
 
 ## Connect services across a LAN
 
